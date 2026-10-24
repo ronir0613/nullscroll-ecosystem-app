@@ -1,7 +1,9 @@
 package com.nullscroll.morninglock
 
+import android.app.AppOpsManager
 import android.content.Intent
 import android.os.Bundle
+import android.os.Process
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -36,6 +38,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -50,6 +57,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.nullscroll.morninglock.ui.theme.MorningLockTheme
+import kotlinx.coroutines.delay
 
 private val DotGothic = FontFamily(Font(R.font.dotgothic16))
 private val Inter = FontFamily(Font(R.font.inter_latin))
@@ -100,28 +108,52 @@ private fun appColors(dark: Boolean) = if (dark) {
 }
 
 class MainActivity : ComponentActivity() {
+    private var usageAccessGranted by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MorningLockTheme { MorningLockApp() } }
+        usageAccessGranted = hasUsageAccess()
+        setContent { MorningLockTheme { MorningLockApp(usageAccessGranted) } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        usageAccessGranted = hasUsageAccess()
+    }
+
+    private fun hasUsageAccess(): Boolean {
+        val appOps = getSystemService(APP_OPS_SERVICE) as AppOpsManager
+        return appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName) == AppOpsManager.MODE_ALLOWED
     }
 }
 
 @Composable
-private fun MorningLockApp() {
+private fun MorningLockApp(usageAccessGranted: Boolean) {
     val nav = rememberNavController()
+    var showSplash by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        delay(1_500)
+        showSplash = false
+    }
+
     CompositionLocalProvider(LocalTextStyle provides MaterialTheme.typography.bodyLarge.copy(fontFamily = Inter)) {
-        NavHost(navController = nav, startDestination = screens.first().route) {
-            screens.forEachIndexed { index, screen ->
-                composable(screen.route) {
-                    ScreenFrame(
-                        screen = screen,
-                        page = index + 1,
-                        onPrimary = {
-                            val next = screens[(index + 1) % screens.size].route
-                            nav.navigate(next) { launchSingleTop = true }
-                        },
-                        onSecondary = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
-                    )
+        if (showSplash) {
+            NullScrollSplash()
+        } else {
+            NavHost(navController = nav, startDestination = screens.first().route) {
+                screens.forEachIndexed { index, screen ->
+                    composable(screen.route) {
+                        ScreenFrame(
+                            screen = screen,
+                            page = index + 1,
+                            usageAccessGranted = usageAccessGranted,
+                            onPrimary = {
+                                val next = screens[(index + 1) % screens.size].route
+                                nav.navigate(next) { launchSingleTop = true }
+                            },
+                            onSecondary = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
+                        )
+                    }
                 }
             }
         }
@@ -129,7 +161,39 @@ private fun MorningLockApp() {
 }
 
 @Composable
-private fun ScreenFrame(screen: ScreenCopy, page: Int, onPrimary: () -> Unit, onSecondary: () -> Unit) {
+private fun NullScrollSplash() {
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val colors = appColors(dark)
+    Box(Modifier.fillMaxSize()) {
+        PaperTexture(colors)
+        Column(
+            modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            BrandMark(dark, diameter = 60.dp)
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "NULLSCROLL",
+                color = colors.text,
+                fontFamily = DotGothic,
+                fontSize = 24.sp,
+                letterSpacing = 0.3.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            Text("MORNING / 01", color = colors.secondaryText, fontFamily = FontFamily.Monospace, fontSize = 11.sp, letterSpacing = 1.sp)
+        }
+    }
+}
+
+@Composable
+private fun ScreenFrame(
+    screen: ScreenCopy,
+    page: Int,
+    usageAccessGranted: Boolean,
+    onPrimary: () -> Unit,
+    onSecondary: () -> Unit
+) {
     val context = LocalContext.current
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
     val colors = appColors(dark)
@@ -184,32 +248,34 @@ private fun ScreenFrame(screen: ScreenCopy, page: Int, onPrimary: () -> Unit, on
                         }
                     }
                 }
-                Spacer(Modifier.height(14.dp))
-                BrandPanel(colors, dark, inset = 18.dp) {
-                    Text("USAGE ACCESS", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "During a session, Morning Lock checks which app is in front about once a second and returns you to the lock screen if needed. That activity stays on your phone and is never sent anywhere.",
-                        color = colors.secondaryText,
-                        fontSize = 14.sp,
-                        lineHeight = 21.sp
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "To allow it: open Usage access settings, choose Morning Lock, turn on Permit usage access, then return here.",
-                        color = colors.text,
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(Modifier.height(15.dp))
-                    BrandButton(
-                        label = "OPEN USAGE ACCESS SETTINGS",
-                        colors = colors,
-                        dark = dark,
-                        secondary = true,
-                        onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
-                    )
+                if (!usageAccessGranted) {
+                    Spacer(Modifier.height(14.dp))
+                    BrandPanel(colors, dark, inset = 18.dp) {
+                        Text("USAGE ACCESS", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "During a session, Morning Lock checks which app is in front about once a second and returns you to the lock screen if needed. That activity stays on your phone and is never sent anywhere.",
+                            color = colors.secondaryText,
+                            fontSize = 14.sp,
+                            lineHeight = 21.sp
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "To allow it: open Usage access settings, choose Morning Lock, turn on Permit usage access, then return here.",
+                            color = colors.text,
+                            fontSize = 13.sp,
+                            lineHeight = 20.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(15.dp))
+                        BrandButton(
+                            label = "OPEN USAGE ACCESS SETTINGS",
+                            colors = colors,
+                            dark = dark,
+                            secondary = true,
+                            onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+                        )
+                    }
                 }
             } else {
                 Spacer(Modifier.height(26.dp))
@@ -275,10 +341,10 @@ private fun BrandBar(colors: AppColors, dark: Boolean) {
 }
 
 @Composable
-private fun BrandMark(dark: Boolean) {
+private fun BrandMark(dark: Boolean, diameter: androidx.compose.ui.unit.Dp = 34.dp) {
     val rightHalf = if (dark) Color.Black else Color.White
     val outline = if (dark) Color.White else Color.Black
-    Box(Modifier.size(34.dp)) {
+    Box(Modifier.size(diameter)) {
         Canvas(Modifier.fillMaxSize()) {
             val radius = size.minDimension / 2f - 1.dp.toPx()
             val circleSize = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f)
