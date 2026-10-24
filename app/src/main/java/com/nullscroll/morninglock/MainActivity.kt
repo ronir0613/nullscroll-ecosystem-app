@@ -1,10 +1,11 @@
 package com.nullscroll.morninglock
 
-import android.os.Bundle
 import android.content.Intent
+import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -17,41 +18,87 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.zIndex
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
 import com.nullscroll.morninglock.ui.theme.MorningLockTheme
+
+private val DotGothic = FontFamily(Font(R.font.dotgothic16))
+private val Inter = FontFamily(Font(R.font.inter_latin))
+private val SiteRed = Color(0xFFFF1F1F)
+
+private data class ScreenCopy(
+    val route: String,
+    val kicker: String,
+    val title: String,
+    val body: String,
+    val action: String
+)
+
+private val screens = listOf(
+    ScreenCopy("onboarding", "MORNING LOCK / 001", "Protect your\nfirst 30 minutes.", "Plan a few small tasks tonight. Tomorrow, start your morning with intention.", "SET UP MY MORNING"),
+    ScreenCopy("plan", "TONIGHT'S PLAN", "Build a calmer\nmorning.", "Choose what deserves your attention before the day gets loud.", "CHOOSE ESSENTIALS"),
+    ScreenCopy("essentials", "YOUR SAFETY NET", "Keep essentials\nwithin reach.", "Choose health and safety apps that stay available during your morning session.", "REVIEW MY PLAN"),
+    ScreenCopy("review", "LOCK-IN REVIEW", "Make it\nintentional.", "Your plan is saved for tomorrow. It can be extended in the morning, never shortened.", "SAVE TOMORROW'S PLAN"),
+    ScreenCopy("alarm", "ALARM / PREVIEW", "Your morning\nstarts here.", "Dismiss to begin your plan. Snooze stays on the alarm screen.", "DISMISS & START"),
+    ScreenCopy("morning", "MORNING LIST", "One thing\nat a time.", "Your phone returns to normal when your tasks are done or the session ceiling is reached.", "START FIRST TASK"),
+    ScreenCopy("task", "TASK TIMER / PREVIEW", "Stay with\nthis task.", "Timers begin after your final alarm dismissal. You confirm each task when time is up.", "VIEW MY STREAKS"),
+    ScreenCopy("streaks", "STREAK CALENDAR", "Show up for\nyour mornings.", "A quiet record of time spent, calls, and snoozes.", "PLAN TOMORROW")
+)
+
+private data class AppColors(
+    val background: Color,
+    val surface: Color,
+    val surfaceAlt: Color,
+    val text: Color,
+    val secondaryText: Color,
+    val border: Color,
+    val shadow: Color,
+    val dot: Color
+)
+
+private fun appColors(dark: Boolean) = if (dark) {
+    AppColors(
+        background = Color(0xFF111111), surface = Color(0xFF1B1B1B), surfaceAlt = Color(0xFF242424),
+        text = Color(0xFFF7F6F3), secondaryText = Color(0xFFC1BFBB), border = Color(0xFF77746E),
+        shadow = Color.Black, dot = Color.White.copy(alpha = 0.12f)
+    )
+} else {
+    AppColors(
+        background = Color(0xFFF7F6F3), surface = Color(0xFFFBFAF8), surfaceAlt = Color.White,
+        text = Color(0xFF111111), secondaryText = Color(0xFF56534E), border = Color(0xFFD9D8D4),
+        shadow = Color(0xFF111111), dot = Color(0xFF111111).copy(alpha = 0.13f)
+    )
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,155 +107,288 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Screen(val route: String, val title: String, val kicker: String, val copy: String) {
-    Onboarding("onboarding", "Protect your\nfirst 30 minutes.", "MORNING LOCK / 001", "Plan a few small tasks tonight. Tomorrow, start your morning with intention."),
-    Plan("plan", "Build a calmer\nmorning.", "TONIGHT'S PLAN", "Choose what deserves your attention before the day gets loud."),
-    Essentials("essentials", "Keep essentials\nwithin reach.", "YOUR SAFETY NET", "Choose health and safety apps that stay available during your morning session."),
-    Review("review", "Make it\nintentional.", "LOCK-IN REVIEW", "Your plan is saved for tomorrow. It can be extended in the morning, never shortened."),
-    Alarm("alarm", "Your morning\nstarts here.", "ALARM / PREVIEW", "Dismiss to begin your plan. Snooze stays on the alarm screen."),
-    Morning("morning", "One thing\nat a time.", "MORNING LIST", "Your phone returns to normal when your tasks are done or the session ceiling is reached."),
-    Task("task", "Stay with\nthis task.", "TASK TIMER / PREVIEW", "Timers begin after your final alarm dismissal. You confirm each task when time is up."),
-    Streaks("streaks", "Show up for\nyour mornings.", "STREAK CALENDAR", "A quiet record of time spent, calls, and snoozes.");
-}
-
 @Composable
 private fun MorningLockApp() {
     val nav = rememberNavController()
-    NavHost(navController = nav, startDestination = Screen.Onboarding.route) {
-        Screen.entries.forEach { screen ->
-            composable(screen.route) {
-                ScreenFrame(
-                    screen = screen,
-                    onPrimary = {
-                        when (screen) {
-                            Screen.Onboarding -> nav.navigate(Screen.Plan.route)
-                            Screen.Plan -> nav.navigate(Screen.Essentials.route)
-                            Screen.Essentials -> nav.navigate(Screen.Review.route)
-                            Screen.Review -> nav.navigate(Screen.Alarm.route)
-                            Screen.Alarm -> nav.navigate(Screen.Morning.route)
-                            Screen.Morning -> nav.navigate(Screen.Task.route)
-                            Screen.Task -> nav.navigate(Screen.Streaks.route)
-                            Screen.Streaks -> nav.navigate(Screen.Plan.route)
+    CompositionLocalProvider(LocalTextStyle provides MaterialTheme.typography.bodyLarge.copy(fontFamily = Inter)) {
+        NavHost(navController = nav, startDestination = screens.first().route) {
+            screens.forEachIndexed { index, screen ->
+                composable(screen.route) {
+                    ScreenFrame(
+                        screen = screen,
+                        page = index + 1,
+                        onPrimary = {
+                            val next = screens[(index + 1) % screens.size].route
+                            nav.navigate(next) { launchSingleTop = true }
+                        },
+                        onSecondary = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScreenFrame(screen: ScreenCopy, page: Int, onPrimary: () -> Unit, onSecondary: () -> Unit) {
+    val context = LocalContext.current
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val colors = appColors(dark)
+
+    Box(Modifier.fillMaxSize()) {
+        PaperTexture(colors)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.systemBars)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            BrandBar(colors, dark)
+            Spacer(Modifier.height(36.dp))
+            SiteTag(screen.kicker, colors)
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = screen.title,
+                color = colors.text,
+                fontFamily = DotGothic,
+                fontSize = 34.sp,
+                lineHeight = 38.sp,
+                letterSpacing = (-0.5).sp
+            )
+            Spacer(Modifier.height(16.dp))
+            Box(Modifier.width(54.dp).height(5.dp).background(SiteRed))
+            Spacer(Modifier.height(18.dp))
+            Text(
+                text = screen.body,
+                color = colors.secondaryText,
+                fontSize = 16.sp,
+                lineHeight = 25.sp,
+                fontWeight = FontWeight.Medium
+            )
+
+            if (screen.route == "onboarding") {
+                Spacer(Modifier.height(26.dp))
+                BrandPanel(colors, dark) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        Box(Modifier.padding(top = 5.dp).size(9.dp).background(SiteRed))
+                        Column(Modifier.padding(start = 12.dp)) {
+                            Text("STRICT BY DESIGN", color = colors.text, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
+                            Spacer(Modifier.height(7.dp))
+                            Text(
+                                "You choose this boundary. You can leave it at any time, including by exiting screen pinning or restarting your phone.",
+                                color = colors.secondaryText,
+                                fontSize = 14.sp,
+                                lineHeight = 21.sp
+                            )
                         }
-                    },
-                    onSecondary = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                BrandPanel(colors, dark, inset = 18.dp) {
+                    Text("USAGE ACCESS", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "During a session, Morning Lock checks which app is in front about once a second and returns you to the lock screen if needed. That activity stays on your phone and is never sent anywhere.",
+                        color = colors.secondaryText,
+                        fontSize = 14.sp,
+                        lineHeight = 21.sp
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "To allow it: open Usage access settings, choose Morning Lock, turn on Permit usage access, then return here.",
+                        color = colors.text,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(15.dp))
+                    BrandButton(
+                        label = "OPEN USAGE ACCESS SETTINGS",
+                        colors = colors,
+                        dark = dark,
+                        secondary = true,
+                        onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
+                    )
+                }
+            } else {
+                Spacer(Modifier.height(26.dp))
+                BrandPanel(colors, dark) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("0${page}", color = SiteRed, fontFamily = DotGothic, fontSize = 30.sp)
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text("MORNING ROUTINE", color = colors.text, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+                            Text("Screen $page of ${screens.size}", color = colors.secondaryText, fontSize = 13.sp)
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Box(Modifier.fillMaxWidth().height(9.dp).background(colors.surfaceAlt)) {
+                        Box(Modifier.fillMaxWidth(page / screens.size.toFloat()).height(9.dp).background(SiteRed))
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Text(
+                        "This screen is part of the app flow. Its feature will be implemented in a later milestone.",
+                        color = colors.secondaryText,
+                        fontSize = 13.sp,
+                        lineHeight = 19.sp
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(28.dp))
+            BrandButton(screen.action, colors, dark, onClick = onPrimary)
+            if (page > 1) {
+                Spacer(Modifier.height(13.dp))
+                BrandButton("BACK", colors, dark, secondary = true, onClick = onSecondary)
+            }
+            Spacer(Modifier.height(22.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text("A SMALL PROMISE TO YOURSELF", color = colors.secondaryText, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                Text("$page / ${screens.size}", color = colors.secondaryText, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun BrandBar(colors: AppColors, dark: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            BrandMark(dark)
+            Text(
+                text = "NULLSCROLL",
+                modifier = Modifier.padding(start = 9.dp),
+                color = colors.text,
+                fontFamily = DotGothic,
+                fontSize = 17.sp,
+                letterSpacing = 0.1.sp
+            )
+        }
+        Text("MORNING / 01", color = colors.secondaryText, fontFamily = FontFamily.Monospace, fontSize = 10.sp, letterSpacing = 0.5.sp)
+    }
+}
+
+@Composable
+private fun BrandMark(dark: Boolean) {
+    val bars = if (dark) listOf(Color.Black, SiteRed, Color.Black, SiteRed) else listOf(Color.White, SiteRed, Color.White, SiteRed)
+    val outline = if (dark) Color.White else Color.Black
+    Box(Modifier.size(34.dp)) {
+        Row(
+            Modifier.fillMaxSize().background(if (dark) Color.Black else Color.White).padding(2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            bars.forEachIndexed { index, color ->
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxSize()
+                        .padding(end = if (index < bars.lastIndex) 1.dp else 0.dp)
+                        .background(color)
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun ScreenFrame(screen: Screen, onPrimary: () -> Unit, onSecondary: () -> Unit) {
-    val context = LocalContext.current
-    val dark = isSystemInDarkTheme()
-    val paper = if (dark) Color(0xFF101010) else Color(0xFFF7F6F3)
-    val ink = if (dark) Color(0xFFF7F6F3) else Color(0xFF111111)
-    val red = Color(0xFFFF1F1F)
-    Box(Modifier.fillMaxSize()) {
-        StripeBackdrop(dark = dark, modifier = Modifier.fillMaxSize())
-        Column(
-            modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.systemBars).verticalScroll(rememberScrollState()),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("NULLSCROLL", color = ink, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 2.sp)
-                Text("MORNING / 01", color = ink, fontSize = 10.sp, fontFamily = FontFamily.Monospace, letterSpacing = 1.sp)
-            }
-            Spacer(Modifier.height(24.dp))
-            Surface(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp),
-                color = paper,
-                shape = RoundedCornerShape(4.dp),
-                border = androidx.compose.foundation.BorderStroke(1.dp, if (dark) Color(0xFF444444) else Color(0xFFD9D8D4))
-            ) {
-                Column(Modifier.padding(horizontal = 24.dp, vertical = 28.dp)) {
-                    Text(screen.kicker, color = red, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                    Spacer(Modifier.height(18.dp))
-                    Text(screen.title, color = ink, fontSize = 38.sp, lineHeight = 40.sp, fontWeight = FontWeight.Black, letterSpacing = (-1.3).sp)
-                    Spacer(Modifier.height(14.dp))
-                    Text(screen.copy, color = ink.copy(alpha = 0.78f), fontSize = 16.sp, lineHeight = 24.sp)
-                    if (screen == Screen.Onboarding) {
-                        Spacer(Modifier.height(24.dp))
-                        Row(verticalAlignment = Alignment.Top) {
-                            Box(Modifier.padding(top = 5.dp).size(8.dp).background(red, RoundedCornerShape(50)))
-                            Column(Modifier.padding(start = 12.dp)) {
-                                Text("STRICT BY DESIGN", color = ink, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                                Spacer(Modifier.height(5.dp))
-                                Text("You choose this boundary. You can leave it at any time, including by exiting screen pinning or restarting your phone.", color = ink.copy(alpha = 0.72f), fontSize = 14.sp, lineHeight = 20.sp)
-                            }
-                        }
-                        Spacer(Modifier.height(18.dp))
-                        Text("Usage access lets Morning Lock notice when another app comes to the front and return you to your task. Your app activity is checked on-device and is not sent anywhere.", color = ink.copy(alpha = 0.7f), fontSize = 13.sp, lineHeight = 19.sp)
-                        Spacer(Modifier.height(16.dp))
-                        Surface(color = if (dark) Color(0xFF202020) else Color(0xFFECEAE6), shape = RoundedCornerShape(3.dp)) {
-                            Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                                Text("ENABLE USAGE ACCESS", color = ink, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                                Spacer(Modifier.height(8.dp))
-                                Text("1. Open Android's Usage access settings.\n2. Select Morning Lock.\n3. Turn on Permit usage access, then return here.", color = ink.copy(alpha = 0.75f), fontSize = 13.sp, lineHeight = 20.sp)
-                                Spacer(Modifier.height(12.dp))
-                                Button(
-                                    onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
-                                    modifier = Modifier.fillMaxWidth().height(48.dp),
-                                    shape = RoundedCornerShape(3.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = ink, contentColor = paper)
-                                ) { Text("OPEN USAGE ACCESS SETTINGS", fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp) }
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(28.dp))
-                    Button(
-                        onClick = onPrimary,
-                        modifier = Modifier.fillMaxWidth().height(56.dp),
-                        shape = RoundedCornerShape(3.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = red, contentColor = Color.White)
-                    ) {
-                        Text(screen.primaryLabel(), fontSize = 14.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.7.sp)
-                    }
-                    if (screen != Screen.Onboarding) {
-                        Spacer(Modifier.height(10.dp))
-                        Button(
-                            onClick = onSecondary,
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = RoundedCornerShape(3.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = if (dark) Color(0xFF262626) else Color(0xFFECEAE6), contentColor = ink)
-                        ) { Text("BACK", fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp) }
-                    }
-                }
-            }
-            Spacer(Modifier.height(20.dp))
-            Text("A SMALL PROMISE TO YOURSELF", color = if (dark) Color.LightGray else Color.DarkGray, fontSize = 10.sp, fontFamily = FontFamily.Monospace, letterSpacing = 1.1.sp)
-            Spacer(Modifier.height(22.dp))
+        Canvas(Modifier.fillMaxSize()) {
+            drawRect(outline, style = Stroke(width = 2.dp.toPx()))
         }
     }
 }
 
-private fun Screen.primaryLabel(): String = when (this) {
-    Screen.Onboarding -> "SET UP MY MORNING  →"
-    Screen.Plan -> "CHOOSE ESSENTIALS  →"
-    Screen.Essentials -> "REVIEW MY PLAN  →"
-    Screen.Review -> "SAVE TOMORROW'S PLAN  →"
-    Screen.Alarm -> "DISMISS & START  →"
-    Screen.Morning -> "START FIRST TASK  →"
-    Screen.Task -> "VIEW MY STREAKS  →"
-    Screen.Streaks -> "PLAN TOMORROW  →"
+@Composable
+private fun SiteTag(text: String, colors: AppColors) {
+    Surface(
+        color = colors.surfaceAlt,
+        shape = RoundedCornerShape(0.dp),
+        border = BorderStroke(1.dp, colors.border)
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            color = colors.secondaryText,
+            fontFamily = FontFamily.Monospace,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.8.sp
+        )
+    }
 }
 
 @Composable
-private fun StripeBackdrop(dark: Boolean, modifier: Modifier = Modifier) {
-    val colors = if (dark) listOf(Color.Black, Color(0xFFFF1F1F)) else listOf(Color.White, Color(0xFFFF1F1F))
-    Canvas(modifier) {
-        val stripeWidth = 28.dp.toPx()
-        var x = 0f
-        var index = 0
-        while (x < size.width) {
-            drawRect(colors[index % colors.size], topLeft = androidx.compose.ui.geometry.Offset(x, 0f), size = androidx.compose.ui.geometry.Size(stripeWidth, size.height))
-            x += stripeWidth
-            index++
+private fun BrandPanel(colors: AppColors, dark: Boolean, inset: androidx.compose.ui.unit.Dp = 20.dp, content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxWidth().padding(end = 6.dp, bottom = 6.dp)) {
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = colors.surface,
+            shape = RoundedCornerShape(0.dp),
+            border = BorderStroke(1.dp, colors.border)
+        ) {
+            Column(Modifier.padding(inset)) { content() }
+        }
+        Box(
+            Modifier
+                .matchParentSize()
+                .offset(x = 6.dp, y = 6.dp)
+                .background(if (dark) SiteRed else colors.shadow)
+                .zIndex(-1f)
+        )
+    }
+}
+
+@Composable
+private fun BrandButton(
+    label: String,
+    colors: AppColors,
+    dark: Boolean,
+    secondary: Boolean = false,
+    onClick: () -> Unit
+) {
+    val background = when {
+        secondary && dark -> colors.surfaceAlt
+        secondary -> Color.White
+        dark -> Color(0xFFF7F6F3)
+        else -> Color.Black
+    }
+    val content = when {
+        secondary && dark -> colors.text
+        secondary -> Color.Black
+        dark -> Color.Black
+        else -> Color.White
+    }
+    val shadow = if (secondary) colors.border else SiteRed
+    Box(Modifier.fillMaxWidth().padding(end = 5.dp, bottom = 5.dp)) {
+        Box(Modifier.fillMaxWidth().height(56.dp).offset(x = 5.dp, y = 5.dp).background(shadow))
+        Button(
+            onClick = onClick,
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            shape = RoundedCornerShape(0.dp),
+            border = BorderStroke(2.dp, if (secondary && dark) colors.border else Color.Black),
+            colors = ButtonDefaults.buttonColors(containerColor = background, contentColor = content)
+        ) {
+            Text(label, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 0.45.sp, textAlign = TextAlign.Center)
+        }
+    }
+}
+
+@Composable
+private fun PaperTexture(colors: AppColors) {
+    Canvas(Modifier.fillMaxSize()) {
+        drawRect(colors.background)
+        val spacing = 18.dp.toPx()
+        val radius = 0.8.dp.toPx()
+        var y = spacing / 2f
+        while (y < size.height) {
+            var x = spacing / 2f
+            while (x < size.width) {
+                drawCircle(color = colors.dot, radius = radius, center = androidx.compose.ui.geometry.Offset(x, y))
+                x += spacing
+            }
+            y += spacing
         }
     }
 }
