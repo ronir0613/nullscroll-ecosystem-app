@@ -19,7 +19,6 @@ private val DarkColors = darkColorScheme(
 )
 
 @Composable
-fun MorningLockTheme(content: @Composable () -> Unit) {
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
-    MaterialTheme(colorScheme = if (dark) DarkColors else LightColors, content = content)
+fun MorningLockTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
+    MaterialTheme(colorScheme = if (darkTheme) DarkColors else LightColors, content = content)
 }

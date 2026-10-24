@@ -1,16 +1,20 @@
 package com.nullscroll.morninglock
 
 import android.app.AppOpsManager
+import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.content.res.Configuration
+import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.provider.Settings
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +39,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -109,26 +115,106 @@ private fun appColors(dark: Boolean) = if (dark) {
 
 class MainActivity : ComponentActivity() {
     private var usageAccessGranted by mutableStateOf(false)
+    private var darkThemeEnabled by mutableStateOf(false)
+    private var systemDarkTheme = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usageAccessGranted = hasUsageAccess()
-        setContent { MorningLockTheme { MorningLockApp(usageAccessGranted) } }
+        systemDarkTheme = isSystemDarkTheme()
+        darkThemeEnabled = when (getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(THEME_MODE, SYSTEM_MODE)) {
+            DARK_MODE -> true
+            LIGHT_MODE -> false
+            else -> systemDarkTheme
+        }
+        updateLauncherIcon()
+        setContent {
+            MorningLockTheme(darkThemeEnabled) {
+                MorningLockApp(usageAccessGranted, darkThemeEnabled, ::toggleTheme)
+            }
+        }
+        window.decorView.post { updateSystemBars() }
     }
 
     override fun onResume() {
         super.onResume()
         usageAccessGranted = hasUsageAccess()
+        refreshDeviceTheme()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        refreshDeviceTheme()
+    }
+
+    private fun toggleTheme() {
+        darkThemeEnabled = !darkThemeEnabled
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
+            .putString(THEME_MODE, if (darkThemeEnabled) DARK_MODE else LIGHT_MODE)
+            .apply()
+        updateSystemBars()
+    }
+
+    private fun refreshDeviceTheme() {
+        val wasDark = systemDarkTheme
+        systemDarkTheme = isSystemDarkTheme()
+        updateLauncherIcon()
+        if (wasDark != systemDarkTheme && getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(THEME_MODE, SYSTEM_MODE) == SYSTEM_MODE) {
+            darkThemeEnabled = systemDarkTheme
+            updateSystemBars()
+        }
+    }
+
+    private fun isSystemDarkTheme(): Boolean =
+        (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+
+    private fun updateLauncherIcon() {
+        val packageManager = packageManager
+        val light = ComponentName(this, "$packageName.LauncherLight")
+        val dark = ComponentName(this, "$packageName.LauncherDark")
+        packageManager.setComponentEnabledSetting(
+            light,
+            if (systemDarkTheme) PackageManager.COMPONENT_ENABLED_STATE_DISABLED else PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+            PackageManager.DONT_KILL_APP
+        )
+        packageManager.setComponentEnabledSetting(
+            dark,
+            if (systemDarkTheme) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+            PackageManager.DONT_KILL_APP
+        )
+    }
+
+    private fun updateSystemBars() {
+        val barColor = if (darkThemeEnabled) android.graphics.Color.rgb(17, 17, 17) else android.graphics.Color.rgb(247, 246, 243)
+        window.statusBarColor = barColor
+        window.navigationBarColor = barColor
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.setSystemBarsAppearance(
+                if (darkThemeEnabled) 0 else android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (darkThemeEnabled) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        }
     }
 
     private fun hasUsageAccess(): Boolean {
         val appOps = getSystemService(APP_OPS_SERVICE) as AppOpsManager
         return appOps.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), packageName) == AppOpsManager.MODE_ALLOWED
     }
+
+    private companion object {
+        const val PREFERENCES = "morning_lock_preferences"
+        const val THEME_MODE = "theme_mode"
+        const val SYSTEM_MODE = "system"
+        const val DARK_MODE = "dark"
+        const val LIGHT_MODE = "light"
+    }
 }
 
 @Composable
-private fun MorningLockApp(usageAccessGranted: Boolean) {
+private fun MorningLockApp(usageAccessGranted: Boolean, darkTheme: Boolean, onToggleTheme: () -> Unit) {
     val nav = rememberNavController()
     var showSplash by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
@@ -138,7 +224,7 @@ private fun MorningLockApp(usageAccessGranted: Boolean) {
 
     CompositionLocalProvider(LocalTextStyle provides MaterialTheme.typography.bodyLarge.copy(fontFamily = Inter)) {
         if (showSplash) {
-            NullScrollSplash()
+            NullScrollSplash(darkTheme)
         } else {
             NavHost(navController = nav, startDestination = screens.first().route) {
                 screens.forEachIndexed { index, screen ->
@@ -147,6 +233,8 @@ private fun MorningLockApp(usageAccessGranted: Boolean) {
                             screen = screen,
                             page = index + 1,
                             usageAccessGranted = usageAccessGranted,
+                            dark = darkTheme,
+                            onToggleTheme = onToggleTheme,
                             onPrimary = {
                                 val next = screens[(index + 1) % screens.size].route
                                 nav.navigate(next) { launchSingleTop = true }
@@ -161,8 +249,7 @@ private fun MorningLockApp(usageAccessGranted: Boolean) {
 }
 
 @Composable
-private fun NullScrollSplash() {
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+private fun NullScrollSplash(dark: Boolean) {
     val colors = appColors(dark)
     Box(Modifier.fillMaxSize()) {
         PaperTexture(colors)
@@ -191,11 +278,12 @@ private fun ScreenFrame(
     screen: ScreenCopy,
     page: Int,
     usageAccessGranted: Boolean,
+    dark: Boolean,
+    onToggleTheme: () -> Unit,
     onPrimary: () -> Unit,
     onSecondary: () -> Unit
 ) {
     val context = LocalContext.current
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
     val colors = appColors(dark)
 
     Box(Modifier.fillMaxSize()) {
@@ -208,7 +296,7 @@ private fun ScreenFrame(
                 .padding(horizontal = 20.dp),
             horizontalAlignment = Alignment.Start
         ) {
-            BrandBar(colors, dark)
+            BrandBar(colors, dark, onToggleTheme)
             Spacer(Modifier.height(36.dp))
             SiteTag(screen.kicker, colors)
             Spacer(Modifier.height(16.dp))
@@ -319,7 +407,7 @@ private fun ScreenFrame(
 }
 
 @Composable
-private fun BrandBar(colors: AppColors, dark: Boolean) {
+private fun BrandBar(colors: AppColors, dark: Boolean, onToggleTheme: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -336,7 +424,21 @@ private fun BrandBar(colors: AppColors, dark: Boolean) {
                 letterSpacing = 0.1.sp
             )
         }
-        Text("MORNING / 01", color = colors.secondaryText, fontFamily = FontFamily.Monospace, fontSize = 10.sp, letterSpacing = 0.5.sp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(if (dark) "DARK" else "LIGHT", color = colors.secondaryText, fontFamily = FontFamily.Monospace, fontSize = 10.sp, letterSpacing = 0.5.sp)
+            Switch(
+                checked = dark,
+                onCheckedChange = { onToggleTheme() },
+                modifier = Modifier.padding(start = 4.dp),
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.White,
+                    checkedTrackColor = SiteRed,
+                    uncheckedThumbColor = Color.White,
+                    uncheckedTrackColor = Color(0xFF77746E),
+                    uncheckedBorderColor = Color(0xFF77746E)
+                )
+            )
+        }
     }
 }
 
