@@ -6,7 +6,7 @@ Updated 2026-10-24.
 
 - Native Android app: Kotlin, Jetpack Compose, Material 3, Room; min SDK 29 and target/compile SDK 36.
 - Compose uses the stable June 2026 BOM with compile SDK 36. The newer Compose 1.12 line requires API 37 and AGP 9.1.1+, so we will take that toolchain step deliberately when the app moves to API 37. Local data is stored in Room; no backend, analytics, or network calls are part of the MVP.
-- The app styling follows the NullScroll site's paper-and-ink look: warm paper with a subtle dot texture, square white panels, restrained black typography, and black calls to action with red offset shadows. The alternating red/white or black/red stripes are confined to the app logo and launcher mark.
+- The app styling follows the NullScroll site's paper-and-ink look: warm paper with a subtle dot texture, square white panels, restrained black typography, and black calls to action with red offset shadows. The app logo is a vertically split circle: red on the left, white on the right in light mode, and black on the right in dark mode.
 - Inter is bundled for body text and DotGothic16 for display text from the site's Google Fonts styles. Their Latin subsets and OFL licenses are included locally, so the app makes no font network requests.
 - The app offers itself as both a normal launcher icon and a Home app. The user must choose it as default Home through Android's system UI; the app cannot silently change the Home role.
 

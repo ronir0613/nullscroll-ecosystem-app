@@ -39,7 +39,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -277,25 +276,22 @@ private fun BrandBar(colors: AppColors, dark: Boolean) {
 
 @Composable
 private fun BrandMark(dark: Boolean) {
-    val bars = if (dark) listOf(Color.Black, SiteRed, Color.Black, SiteRed) else listOf(Color.White, SiteRed, Color.White, SiteRed)
+    val rightHalf = if (dark) Color.Black else Color.White
     val outline = if (dark) Color.White else Color.Black
     Box(Modifier.size(34.dp)) {
-        Row(
-            Modifier.fillMaxSize().background(if (dark) Color.Black else Color.White).padding(2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            bars.forEachIndexed { index, color ->
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .fillMaxSize()
-                        .padding(end = if (index < bars.lastIndex) 1.dp else 0.dp)
-                        .background(color)
-                )
-            }
-        }
         Canvas(Modifier.fillMaxSize()) {
-            drawRect(outline, style = Stroke(width = 2.dp.toPx()))
+            val radius = size.minDimension / 2f - 1.dp.toPx()
+            val circleSize = androidx.compose.ui.geometry.Size(radius * 2f, radius * 2f)
+            val topLeft = androidx.compose.ui.geometry.Offset(size.width / 2f - radius, size.height / 2f - radius)
+            drawArc(SiteRed, startAngle = 90f, sweepAngle = 180f, useCenter = true, topLeft = topLeft, size = circleSize)
+            drawArc(rightHalf, startAngle = -90f, sweepAngle = 180f, useCenter = true, topLeft = topLeft, size = circleSize)
+            drawCircle(outline, radius = radius, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.dp.toPx()))
+            drawLine(
+                color = outline,
+                start = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f - radius),
+                end = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f + radius),
+                strokeWidth = 1.dp.toPx()
+            )
         }
     }
 }
