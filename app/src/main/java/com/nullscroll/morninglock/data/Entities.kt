@@ -1,6 +1,7 @@
 package com.nullscroll.morninglock.data
 
 import androidx.room.Entity
+import androidx.room.ColumnInfo
 import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -12,6 +13,8 @@ data class PlanEntity(
     val alarmTime: String,
     val mode: String = "STRICT",
     val locked: Boolean = false,
+    @ColumnInfo(defaultValue = "30") val baseBudgetMinutes: Int = 30,
+    @ColumnInfo(defaultValue = "0") val extensionMinutes: Int = 0,
     val createdAtEpochMillis: Long = System.currentTimeMillis()
 )
 

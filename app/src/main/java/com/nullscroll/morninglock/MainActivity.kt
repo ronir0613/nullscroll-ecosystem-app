@@ -62,12 +62,14 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.room.Room
+import com.nullscroll.morninglock.data.MorningLockDatabase
 import com.nullscroll.morninglock.ui.theme.MorningLockTheme
 import kotlinx.coroutines.delay
 
-private val DotGothic = FontFamily(Font(R.font.dotgothic16))
-private val Inter = FontFamily(Font(R.font.inter_latin))
-private val SiteRed = Color(0xFFFF1F1F)
+internal val DotGothic = FontFamily(Font(R.font.dotgothic16))
+internal val Inter = FontFamily(Font(R.font.inter_latin))
+internal val SiteRed = Color(0xFFFF1F1F)
 
 private data class ScreenCopy(
     val route: String,
@@ -88,7 +90,7 @@ private val screens = listOf(
     ScreenCopy("streaks", "STREAK CALENDAR", "Show up for\nyour mornings.", "A quiet record of time spent, calls, and snoozes.", "PLAN TOMORROW")
 )
 
-private data class AppColors(
+internal data class AppColors(
     val background: Color,
     val surface: Color,
     val surfaceAlt: Color,
@@ -99,7 +101,7 @@ private data class AppColors(
     val dot: Color
 )
 
-private fun appColors(dark: Boolean) = if (dark) {
+internal fun appColors(dark: Boolean) = if (dark) {
     AppColors(
         background = Color(0xFF111111), surface = Color(0xFF1B1B1B), surfaceAlt = Color(0xFF242424),
         text = Color(0xFFF7F6F3), secondaryText = Color(0xFFC1BFBB), border = Color(0xFF77746E),
@@ -215,6 +217,14 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun MorningLockApp(usageAccessGranted: Boolean, darkTheme: Boolean, onToggleTheme: () -> Unit) {
+    val context = LocalContext.current
+    val dao = remember {
+        Room.databaseBuilder(context.applicationContext, MorningLockDatabase::class.java, "morning-lock.db")
+            .addMigrations(MorningLockDatabase.MIGRATION_1_2)
+            .build()
+            .dao()
+    }
+    val draft = remember { NightBeforeDraft() }
     val nav = rememberNavController()
     var showSplash by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) {
@@ -227,16 +237,36 @@ private fun MorningLockApp(usageAccessGranted: Boolean, darkTheme: Boolean, onTo
             NullScrollSplash(darkTheme)
         } else {
             NavHost(navController = nav, startDestination = screens.first().route) {
-                screens.forEachIndexed { index, screen ->
+                composable("onboarding") {
+                    ScreenFrame(
+                        screen = screens[0], page = 1, pageCount = 4, usageAccessGranted = usageAccessGranted,
+                        dark = darkTheme, onToggleTheme = onToggleTheme,
+                        onPrimary = { nav.navigate("plan") }, onSecondary = { }
+                    )
+                }
+                composable("plan") {
+                    NightPlanScreen(draft, dao, darkTheme, onToggleTheme,
+                        onBack = { nav.popBackStack() }, onContinue = { nav.navigate("essentials") })
+                }
+                composable("essentials") {
+                    EssentialsScreen(draft, dao, darkTheme, onToggleTheme,
+                        onBack = { nav.popBackStack() }, onContinue = { nav.navigate("review") })
+                }
+                composable("review") {
+                    PlanReviewScreen(draft, dao, darkTheme, onToggleTheme,
+                        onBack = { nav.popBackStack() }, onDone = { nav.navigate("onboarding") { popUpTo("onboarding") { inclusive = false } } })
+                }
+                screens.drop(4).forEachIndexed { index, screen ->
                     composable(screen.route) {
+                        val page = index + 5
                         ScreenFrame(
                             screen = screen,
-                            page = index + 1,
+                            page = page,
                             usageAccessGranted = usageAccessGranted,
                             dark = darkTheme,
                             onToggleTheme = onToggleTheme,
                             onPrimary = {
-                                val next = screens[(index + 1) % screens.size].route
+                                val next = screens[(page) % screens.size].route
                                 nav.navigate(next) { launchSingleTop = true }
                             },
                             onSecondary = { if (nav.previousBackStackEntry != null) nav.popBackStack() }
@@ -277,6 +307,7 @@ private fun NullScrollSplash(dark: Boolean) {
 private fun ScreenFrame(
     screen: ScreenCopy,
     page: Int,
+    pageCount: Int = screens.size,
     usageAccessGranted: Boolean,
     dark: Boolean,
     onToggleTheme: () -> Unit,
@@ -373,12 +404,12 @@ private fun ScreenFrame(
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text("MORNING ROUTINE", color = colors.text, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
-                            Text("Screen $page of ${screens.size}", color = colors.secondaryText, fontSize = 13.sp)
+                            Text("Screen $page of $pageCount", color = colors.secondaryText, fontSize = 13.sp)
                         }
                     }
                     Spacer(Modifier.height(16.dp))
                     Box(Modifier.fillMaxWidth().height(9.dp).background(colors.surfaceAlt)) {
-                        Box(Modifier.fillMaxWidth(page / screens.size.toFloat()).height(9.dp).background(SiteRed))
+                        Box(Modifier.fillMaxWidth(page / pageCount.toFloat()).height(9.dp).background(SiteRed))
                     }
                     Spacer(Modifier.height(14.dp))
                     Text(
@@ -399,7 +430,7 @@ private fun ScreenFrame(
             Spacer(Modifier.height(22.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("A SMALL PROMISE TO YOURSELF", color = colors.secondaryText, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                Text("$page / ${screens.size}", color = colors.secondaryText, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                Text("$page / $pageCount", color = colors.secondaryText, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
             Spacer(Modifier.height(24.dp))
         }
@@ -407,7 +438,7 @@ private fun ScreenFrame(
 }
 
 @Composable
-private fun BrandBar(colors: AppColors, dark: Boolean, onToggleTheme: () -> Unit) {
+internal fun BrandBar(colors: AppColors, dark: Boolean, onToggleTheme: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -443,7 +474,7 @@ private fun BrandBar(colors: AppColors, dark: Boolean, onToggleTheme: () -> Unit
 }
 
 @Composable
-private fun BrandMark(dark: Boolean, diameter: androidx.compose.ui.unit.Dp = 34.dp) {
+internal fun BrandMark(dark: Boolean, diameter: androidx.compose.ui.unit.Dp = 34.dp) {
     val rightHalf = if (dark) Color.Black else Color.White
     val outline = if (dark) Color.White else Color.Black
     Box(Modifier.size(diameter)) {
@@ -465,7 +496,7 @@ private fun BrandMark(dark: Boolean, diameter: androidx.compose.ui.unit.Dp = 34.
 }
 
 @Composable
-private fun SiteTag(text: String, colors: AppColors) {
+internal fun SiteTag(text: String, colors: AppColors) {
     Surface(
         color = colors.surfaceAlt,
         shape = RoundedCornerShape(0.dp),
@@ -484,7 +515,7 @@ private fun SiteTag(text: String, colors: AppColors) {
 }
 
 @Composable
-private fun BrandPanel(colors: AppColors, dark: Boolean, inset: androidx.compose.ui.unit.Dp = 20.dp, content: @Composable () -> Unit) {
+internal fun BrandPanel(colors: AppColors, dark: Boolean, inset: androidx.compose.ui.unit.Dp = 20.dp, content: @Composable () -> Unit) {
     Box(Modifier.fillMaxWidth().padding(end = 6.dp, bottom = 6.dp)) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
@@ -505,7 +536,7 @@ private fun BrandPanel(colors: AppColors, dark: Boolean, inset: androidx.compose
 }
 
 @Composable
-private fun BrandButton(
+internal fun BrandButton(
     label: String,
     colors: AppColors,
     dark: Boolean,
@@ -540,7 +571,7 @@ private fun BrandButton(
 }
 
 @Composable
-private fun PaperTexture(colors: AppColors) {
+internal fun PaperTexture(colors: AppColors) {
     Canvas(Modifier.fillMaxSize()) {
         drawRect(colors.background)
         val spacing = 18.dp.toPx()

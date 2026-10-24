@@ -35,6 +35,18 @@ These are accepted consumer-device escape routes. The product must disclose the 
 
 ## Next milestones
 
-- Milestone 2 implements the night-before plan and makes a saved plan immutable except for extension during the morning.
+- Milestone 2 implements the night-before flow and makes a saved plan immutable except for positive time extensions during the morning.
 - Milestone 3 implements exact alarm scheduling, snoozes and boot re-arming.
 - Milestone 4 prototypes the Usage Access foreground monitor and best-effort return-to-lock behavior. The deadline and emergency route remain independent of that service.
+
+## Milestone 2 plan defaults
+
+- The plan date is tomorrow in the phone's local time. New plans default to a 07:00 alarm time; the user can change it with the system time picker.
+- The plan budget starts at 30 minutes, then adds the duration of each selected task. Each built-in task starts at 5 minutes; the editor changes durations in 5-minute steps, with a 5-minute minimum and 120-minute maximum.
+- Each built-in task type can be added once. The user can reorder or remove tasks before saving.
+- Strict is selected by default. Standard and Gentle are visible but disabled as coming soon; there is no payment UI.
+- READ_CONTACTS is requested only after the user taps Choose Close Ones on the safety screen. Denying it does not block app selection or plan creation. Contact names and numbers remain local.
+- The app allow-list uses launchable activities declared through the manifest's `<queries>` intent. Android does not identify a user's health/safety apps reliably, so the user chooses which launchable apps to mark as health/safety.
+- Lock-in saves the plan, ordered tasks, close ones, and allowed apps transactionally. A second plan for the same date is refused. The morning extension is guarded in Room and accepts positive minutes only; the morning UI is part of a later milestone.
+- Room version 2 adds the 30-minute base budget and an extension counter. Version 1 databases migrate with defaults of 30 and 0.
+- The app does not schedule an alarm yet; exact alarms and snoozes are milestone 3.
