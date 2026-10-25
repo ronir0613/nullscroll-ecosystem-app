@@ -45,6 +45,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,13 +63,15 @@ import com.nullscroll.morninglock.data.CloseOneEntity
 import com.nullscroll.morninglock.data.MorningLockDao
 import com.nullscroll.morninglock.data.PlanEntity
 import com.nullscroll.morninglock.data.PlanRules
+import com.nullscroll.morninglock.data.PlanReviewRules
 import com.nullscroll.morninglock.data.TaskEntity
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.launch
-import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal data class TaskDraft(val type: String, val label: String, val durationMinutes: Int = 5)
 
@@ -357,25 +360,35 @@ internal fun EssentialsScreen(
     }
     val contacts = remember { mutableStateListOf<ContactOption>() }
     val apps = remember { mutableStateListOf<AppOption>() }
-    val scope = rememberCoroutineScope()
+    var contactsLoaded by remember { mutableStateOf(false) }
+    var appsLoaded by remember { mutableStateOf(false) }
     val permissionRequest = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         hasContactsPermission = granted
-        if (granted) scope.launch {
-            contacts.clear()
-            contacts.addAll(readPhoneContacts(context))
+    }
+
+    LaunchedEffect(draft) {
+        if (!draft.selectionsLoaded) {
+            val (savedCloseOnes, savedApps) = withContext(Dispatchers.IO) {
+                dao.loadCloseOnes() to dao.loadAllowedApps()
+            }
+            draft.closeOnes.addAll(savedCloseOnes)
+            draft.allowedApps.addAll(savedApps)
+            draft.selectionsLoaded = true
         }
+        val installedApps = withContext(Dispatchers.IO) { queryLaunchableApps(context) }
+        apps.clear()
+        apps.addAll(installedApps)
+        appsLoaded = true
     }
 
     LaunchedEffect(draft, hasContactsPermission) {
-        if (!draft.selectionsLoaded) {
-            draft.closeOnes.addAll(dao.loadCloseOnes())
-            draft.allowedApps.addAll(dao.loadAllowedApps())
-            draft.selectionsLoaded = true
-        }
-        apps.clear()
-        apps.addAll(queryLaunchableApps(context))
         contacts.clear()
-        if (hasContactsPermission) contacts.addAll(readPhoneContacts(context))
+        if (hasContactsPermission) {
+            contactsLoaded = false
+            val savedContacts = withContext(Dispatchers.IO) { readPhoneContacts(context) }
+            contacts.addAll(savedContacts)
+        }
+        contactsLoaded = true
     }
 
     FlowPage(
@@ -412,7 +425,7 @@ internal fun EssentialsScreen(
             }
         } else if (contacts.isEmpty()) {
             FlowPanel(dark, inset = 15.dp) {
-                Text("No phone contacts found.", color = appColors(dark).secondaryText, fontSize = 13.sp)
+                Text(if (contactsLoaded) "No phone contacts found." else "Loading contacts…", color = appColors(dark).secondaryText, fontSize = 13.sp)
             }
         } else {
             FlowPanel(dark, inset = 8.dp) {
@@ -445,7 +458,7 @@ internal fun EssentialsScreen(
         Spacer(Modifier.height(10.dp))
         if (apps.isEmpty()) {
             FlowPanel(dark, inset = 15.dp) {
-                Text("No other launchable apps were found.", color = appColors(dark).secondaryText, fontSize = 13.sp)
+                Text(if (appsLoaded) "No other launchable apps were found." else "Loading installed apps…", color = appColors(dark).secondaryText, fontSize = 13.sp)
             }
         } else {
             FlowPanel(dark, inset = 8.dp) {
@@ -516,6 +529,12 @@ internal fun PlanReviewScreen(
         PlanRules.plannedBudgetMinutes(draft.tasks.map { it.durationMinutes })
     }
     val canLock = existing || PlanRules.canLock(draft.tasks.map { it.durationMinutes })
+    val reviewActions = PlanReviewRules.actions(
+        existing = existing,
+        pending = existingPlanPending,
+        alarmScheduled = draft.alarmScheduled,
+        alarmTimeChanged = alarmTimeChanged
+    )
 
     FlowPage(
         page = 4,
@@ -524,13 +543,7 @@ internal fun PlanReviewScreen(
         body = if (existing) "Review your alarm, tasks, and safety choices. You may change the alarm time until the first ring; the task plan stays locked." else "Check the alarm, task order, and safety choices before saving. Saving locks the plan.",
         dark = dark,
         onToggleTheme = onToggleTheme,
-        primaryLabel = when {
-            existing && alarmTimeChanged -> "UPDATE ALARM TIME"
-            existing && (!existingPlanPending || draft.alarmScheduled) -> "BACK TO HOME"
-            existing -> "SCHEDULE ALARM"
-            draft.saving -> "SAVING PLAN"
-            else -> "LOCK PLAN & SET ALARM"
-        },
+        primaryLabel = if (draft.saving) "SAVING PLAN" else reviewActions.primary,
         primaryEnabled = if (existing) !draft.saving else canLock && requiredAlarmAccessReady && !draft.saving,
         onPrimary = {
             if (existing) {
@@ -628,7 +641,7 @@ internal fun PlanReviewScreen(
                 }
             }
         },
-        secondaryLabel = if (existing) "BACK TO HOME" else "BACK",
+        secondaryLabel = reviewActions.secondary,
         onSecondary = if (existing) onDone else onBack
     ) {
         AlarmAccessPanel(

@@ -27,6 +27,15 @@ interface MorningLockDao {
     @Query("SELECT * FROM plans WHERE id = :planId LIMIT 1")
     suspend fun planById(planId: Long): PlanEntity?
 
+    @Query("SELECT * FROM morning_sessions WHERE planId = :planId AND endedAtEpochMillis IS NULL ORDER BY dismissedAtEpochMillis DESC LIMIT 1")
+    suspend fun activeSessionForPlan(planId: Long): MorningSessionEntity?
+
+    @Query("SELECT * FROM morning_sessions WHERE endedAtEpochMillis IS NULL ORDER BY dismissedAtEpochMillis DESC LIMIT 1")
+    fun activeSession(): Flow<MorningSessionEntity?>
+
+    @Query("SELECT * FROM morning_sessions WHERE endedAtEpochMillis IS NULL")
+    suspend fun loadActiveSessions(): List<MorningSessionEntity>
+
     @Query("SELECT * FROM plans WHERE locked = 1 AND alarmDismissedAtEpochMillis IS NULL AND (date >= :today OR (snoozesUsed > 0 AND nextAlarmAtEpochMillis IS NOT NULL)) ORDER BY date")
     suspend fun pendingAlarmPlans(today: String): List<PlanEntity>
 
@@ -86,15 +95,69 @@ interface MorningLockDao {
         val plan = planById(planId) ?: return false
         if (!plan.locked || plan.alarmDismissedAtEpochMillis != null || hasMorningSession(planId)) return false
         if (markAlarmDismissed(planId, dismissedAtEpochMillis) != 1) return false
+        val tasks = loadTasksForPlan(planId)
+        val ceiling = SessionRules.ceilingAtEpochMillis(
+            dismissedAtEpochMillis,
+            plan.baseBudgetMinutes,
+            tasks.sumOf { it.durationMinutes },
+            plan.extensionMinutes
+        )
         insertSession(
             MorningSessionEntity(
                 planId = planId,
                 dismissedAtEpochMillis = dismissedAtEpochMillis,
-                snoozes = plan.snoozesUsed
+                snoozes = plan.snoozesUsed,
+                ceilingAtEpochMillis = ceiling
             )
         )
         return true
     }
+
+    @Query("UPDATE morning_sessions SET activeTaskStartedAtEpochMillis = :startedAt, activeTaskEndsAtEpochMillis = :endsAt WHERE id = :sessionId AND endedAtEpochMillis IS NULL AND activeTaskIndex = :taskIndex AND activeTaskStartedAtEpochMillis IS NULL")
+    suspend fun setActiveTaskTimer(sessionId: Long, taskIndex: Int, startedAt: Long, endsAt: Long): Int
+
+    @Transaction
+    suspend fun startActiveTaskTimer(sessionId: Long, startedAtEpochMillis: Long): Boolean {
+        val session = sessionById(sessionId) ?: return false
+        val tasks = loadTasksForPlan(session.planId)
+        val ceiling = session.ceilingAtEpochMillis ?: return false
+        if (session.endedAtEpochMillis != null || !SessionRules.canStartTask(
+                session.activeTaskIndex,
+                tasks.size,
+                session.activeTaskStartedAtEpochMillis,
+                ceiling,
+                startedAtEpochMillis
+            )) return false
+        val task = tasks[session.activeTaskIndex]
+        val end = SessionRules.taskEndAtEpochMillis(startedAtEpochMillis, task.durationMinutes, ceiling)
+        return setActiveTaskTimer(sessionId, session.activeTaskIndex, startedAtEpochMillis, end) == 1
+    }
+
+    @Query("SELECT EXISTS(SELECT 1 FROM task_results WHERE sessionId = :sessionId AND taskId = :taskId)")
+    suspend fun hasTaskResult(sessionId: Long, taskId: Long): Boolean
+
+    @Query("UPDATE morning_sessions SET activeTaskIndex = activeTaskIndex + 1, activeTaskStartedAtEpochMillis = NULL, activeTaskEndsAtEpochMillis = NULL WHERE id = :sessionId AND activeTaskIndex = :taskIndex AND endedAtEpochMillis IS NULL")
+    suspend fun advanceActiveTask(sessionId: Long, taskIndex: Int): Int
+
+    @Transaction
+    suspend fun completeActiveTask(sessionId: Long, taskIndex: Int, taskId: Long, completedAtEpochMillis: Long): Boolean {
+        val session = sessionById(sessionId) ?: return false
+        val task = taskById(taskId) ?: return false
+        if (session.endedAtEpochMillis != null || session.activeTaskIndex != taskIndex) return false
+        if (!SessionRules.canConfirmTask(session.activeTaskEndsAtEpochMillis, completedAtEpochMillis)) return false
+        if (task.planId != session.planId || hasTaskResult(sessionId, taskId)) return false
+        insertTaskResult(TaskResultEntity(sessionId = sessionId, taskId = taskId, completedAtEpochMillis = completedAtEpochMillis))
+        return advanceActiveTask(sessionId, taskIndex) == 1
+    }
+
+    @Query("SELECT * FROM morning_sessions WHERE id = :sessionId LIMIT 1")
+    suspend fun sessionById(sessionId: Long): MorningSessionEntity?
+
+    @Query("SELECT * FROM tasks WHERE id = :taskId LIMIT 1")
+    suspend fun taskById(taskId: Long): TaskEntity?
+
+    @Query("UPDATE morning_sessions SET endedAtEpochMillis = :endedAtEpochMillis, activeTaskStartedAtEpochMillis = NULL, activeTaskEndsAtEpochMillis = NULL WHERE id = :sessionId AND endedAtEpochMillis IS NULL")
+    suspend fun endSession(sessionId: Long, endedAtEpochMillis: Long): Int
 
     @Query("SELECT * FROM tasks WHERE planId = :planId ORDER BY position")
     fun tasksForPlan(planId: Long): Flow<List<TaskEntity>>
@@ -141,7 +204,7 @@ interface MorningLockDao {
 
 @Database(
     entities = [PlanEntity::class, TaskEntity::class, CloseOneEntity::class, AllowedAppEntity::class, MorningSessionEntity::class, TaskResultEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class MorningLockDatabase : RoomDatabase() {
@@ -150,7 +213,7 @@ abstract class MorningLockDatabase : RoomDatabase() {
     companion object {
         fun open(context: Context): MorningLockDatabase =
             Room.databaseBuilder(context.applicationContext, MorningLockDatabase::class.java, "morning-lock.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -165,6 +228,16 @@ abstract class MorningLockDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE plans ADD COLUMN snoozesUsed INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE plans ADD COLUMN nextAlarmAtEpochMillis INTEGER")
                 db.execSQL("ALTER TABLE plans ADD COLUMN alarmDismissedAtEpochMillis INTEGER")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE morning_sessions ADD COLUMN ceilingAtEpochMillis INTEGER")
+                db.execSQL("ALTER TABLE morning_sessions ADD COLUMN activeTaskIndex INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE morning_sessions ADD COLUMN activeTaskStartedAtEpochMillis INTEGER")
+                db.execSQL("ALTER TABLE morning_sessions ADD COLUMN activeTaskEndsAtEpochMillis INTEGER")
+                db.execSQL("UPDATE morning_sessions SET ceilingAtEpochMillis = dismissedAtEpochMillis + ((COALESCE((SELECT baseBudgetMinutes + extensionMinutes FROM plans WHERE plans.id = morning_sessions.planId), 30) + COALESCE((SELECT SUM(durationMinutes) FROM tasks WHERE tasks.planId = morning_sessions.planId), 0) + 20) * 60000) WHERE ceilingAtEpochMillis IS NULL")
             }
         }
     }

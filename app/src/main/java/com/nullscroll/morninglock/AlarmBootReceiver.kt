@@ -20,6 +20,17 @@ internal class AlarmBootReceiver : BroadcastReceiver() {
                 dao.pendingAlarmPlans(LocalDate.now().toString()).forEach { plan ->
                     runCatching { AlarmScheduler.schedule(context, plan) }
                 }
+                val now = System.currentTimeMillis()
+                dao.loadActiveSessions().forEach { session ->
+                    val deadline = session.ceilingAtEpochMillis
+                    if (deadline == null || now >= deadline) {
+                        dao.endSession(session.id, now)
+                    } else {
+                        val deadlineArmed = runCatching { SessionDeadline.schedule(context, session.id, deadline) }.isSuccess
+                        if (deadlineArmed) runCatching { SessionMonitor.start(context, session.id) }
+                        else dao.endSession(session.id, now)
+                    }
+                }
             } finally {
                 pendingResult.finish()
             }

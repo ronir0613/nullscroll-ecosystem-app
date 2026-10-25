@@ -2,6 +2,7 @@ package com.nullscroll.morninglock
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -128,10 +129,26 @@ internal class AlarmActivity : ComponentActivity() {
     }
 
     private suspend fun dismiss(planId: Long) {
-        withContext(Dispatchers.IO) {
-            database.dao().recordFinalAlarmDismissal(planId, System.currentTimeMillis())
+        val session = withContext(Dispatchers.IO) {
+            val dao = database.dao()
+            dao.recordFinalAlarmDismissal(planId, System.currentTimeMillis())
+            dao.activeSessionForPlan(planId)
         }
         AlarmScheduler.cancel(this, planId)
+        if (session != null) {
+            val deadlineArmed = session.ceilingAtEpochMillis?.let { deadline ->
+                runCatching { SessionDeadline.schedule(this, session.id, deadline) }.isSuccess
+            } ?: false
+            if (deadlineArmed) {
+                runCatching { SessionMonitor.start(this, session.id) }
+            } else {
+                withContext(Dispatchers.IO) { database.dao().endSession(session.id, System.currentTimeMillis()) }
+            }
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            )
+        }
         finish()
     }
 }

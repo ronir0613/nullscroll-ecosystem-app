@@ -58,7 +58,11 @@ data class MorningSessionEntity(
     val dismissedAtEpochMillis: Long,
     val endedAtEpochMillis: Long? = null,
     val snoozes: Int = 0,
-    val callCount: Int = 0
+    val callCount: Int = 0,
+    val ceilingAtEpochMillis: Long? = null,
+    @ColumnInfo(defaultValue = "0") val activeTaskIndex: Int = 0,
+    val activeTaskStartedAtEpochMillis: Long? = null,
+    val activeTaskEndsAtEpochMillis: Long? = null
 )
 
 @Entity(

@@ -1,6 +1,6 @@
 # Morning Phone Lock MVP decisions
 
-Updated 2026-10-24.
+Updated 2026-10-25.
 
 ## Milestone 1 defaults
 
@@ -35,9 +35,9 @@ These are accepted consumer-device escape routes. The product must disclose the 
 
 ## Next milestones
 
-- Milestone 2 implements the night-before flow and makes a saved plan immutable except for positive time extensions during the morning.
-- Milestone 3 implements exact alarm scheduling, snoozes and boot re-arming. Dismissing the alarm records the beginning of a session; the lock engine is milestone 4.
-- Milestone 4 prototypes the Usage Access foreground monitor and best-effort return-to-lock behavior. The deadline and emergency route remain independent of that service.
+- Milestones 1–5 implement the onboarding and plan flow, alarm/snooze/reboot handling, user-exitable lock engine, session ceiling, and sequential task runner.
+- Milestone 6 adds close-ones calling, incoming-call handling, emergency-call routing and call counting. Emergency dialing remains available independently of the monitor.
+- Milestone 7 adds allow-list hardening; milestone 8 adds the streak calendar; milestone 9 hardens OEM/battery behavior and completes the manual test checklist.
 
 ## Milestone 2 plan defaults
 
@@ -47,7 +47,7 @@ These are accepted consumer-device escape routes. The product must disclose the 
 - Strict is selected by default. Standard and Gentle are visible but disabled as coming soon; there is no payment UI.
 - READ_CONTACTS is requested only after the user taps Choose Close Ones on the safety screen. Denying it does not block app selection or plan creation. Contact names and numbers remain local.
 - The app allow-list uses launchable activities declared through the manifest's `<queries>` intent. Android does not identify a user's health/safety apps reliably, so the user chooses which launchable apps to mark as health/safety.
-- Lock-in saves the plan, ordered tasks, close ones, and allowed apps transactionally. A second plan for the same date is refused. The morning extension is guarded in Room and accepts positive minutes only; the morning UI is part of a later milestone.
+- Lock-in saves the plan, ordered tasks, close ones, and allowed apps transactionally. A second plan for the same date is refused. The morning extension is guarded in Room and accepts positive minutes only.
 - Room version 2 adds the 30-minute base budget and an extension counter. Version 1 databases migrate with defaults of 30 and 0.
 - A temporary plan-date picker is present for milestone testing. It defaults to tomorrow and allows today or a future date; remove the picker after all tests are complete.
 
@@ -57,5 +57,14 @@ These are accepted consumer-device escape routes. The product must disclose the 
 - API 33 and later use `USE_EXACT_ALARM` because the alarm is core app functionality. API 31–32 use `SCHEDULE_EXACT_ALARM` special access. Android 13+ notification permission is requested from plan review before saving and scheduling.
 - Android 14+ full-screen-intent access is explained and linked from plan review. If the user does not grant it, Android can show the alarm as a heads-up notification instead.
 - The alarm can be snoozed twice, five minutes each. Snooze count and next trigger are stored on the plan so reboot re-arming preserves an in-progress snooze. Final dismissal records one `MorningSession` with the final-dismissal time and snooze count.
-- `BOOT_COMPLETED` restores not-yet-dismissed alarms from Room. The alarm flow does not enforce the morning lock yet; app monitoring, the task lock, crash resume and session ceiling are milestone 4 and later.
+- `BOOT_COMPLETED` restores not-yet-dismissed alarms from Room. Active session recovery is implemented in milestones 4–5.
 - A locked plan's tasks and safety selections stay read-only. The user can review all saved details and change its alarm time until the first ring; the updated local trigger is persisted and rescheduled. Time changes are rejected after a snooze or dismissal.
+
+## Milestones 4–5 post-alarm behavior
+
+- Final alarm dismissal creates one Room session with a persisted deadline: dismissal time + locked plan budget + task durations + extensions + 20 minutes. An exact `AlarmManager` deadline receiver ends the session independently of the monitor service. If Android refuses to arm the deadline, the app ends the session immediately rather than start a lock that could outlive its ceiling.
+- A `specialUse` foreground service checks `UsageStatsManager` events about once per second. It allows Morning Lock, user-selected health/safety packages, and the default/system dialer and in-call UI. Other foreground packages trigger the Home lock activity; when overlay access is granted, a full-screen overlay is an additional backstop.
+- Screen pinning is opt-in. Android's pinning gesture, reboot, safe mode, uninstall, and system controls remain user exits. The lock does not use AccessibilityService or Device Owner APIs.
+- Task index, timer start/end timestamps, and task results are saved in Room v4. Timers resume from their persisted end time; a task cannot be confirmed before zero. Completion requires a tap; the final task or independent deadline ends the session.
+- Emergency access launches the system dialer at 112 from the morning lock and its overlay. The dialer is permitted while the session runs. Close-ones calling, call counting, and streak calendar remain later milestones.
+- Android 14+ requires the `specialUse` foreground-service permission and a service subtype declaration; Play review may still assess the declared use case. OEM process management and overlay behavior require real-device hardening.

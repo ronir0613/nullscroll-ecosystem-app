@@ -12,7 +12,8 @@ import androidx.core.app.NotificationManagerCompat
 internal data class AlarmAccessStatus(
     val notificationsAllowed: Boolean,
     val exactAlarmsAllowed: Boolean,
-    val fullScreenAllowed: Boolean
+    val fullScreenAllowed: Boolean,
+    val overlayAllowed: Boolean
 )
 
 internal fun alarmAccessStatus(context: Context): AlarmAccessStatus {
@@ -21,7 +22,8 @@ internal fun alarmAccessStatus(context: Context): AlarmAccessStatus {
     return AlarmAccessStatus(
         notificationsAllowed = NotificationManagerCompat.from(context).areNotificationsEnabled(),
         exactAlarmsAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarmManager.canScheduleExactAlarms(),
-        fullScreenAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || notificationManager.canUseFullScreenIntent()
+        fullScreenAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || notificationManager.canUseFullScreenIntent(),
+        overlayAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
     )
 }
 
@@ -35,4 +37,8 @@ internal fun exactAlarmSettingsIntent(context: Context): Intent =
 
 internal fun fullScreenSettingsIntent(context: Context): Intent =
     Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT)
+        .setData(Uri.parse("package:${context.packageName}"))
+
+internal fun overlaySettingsIntent(context: Context): Intent =
+    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
         .setData(Uri.parse("package:${context.packageName}"))

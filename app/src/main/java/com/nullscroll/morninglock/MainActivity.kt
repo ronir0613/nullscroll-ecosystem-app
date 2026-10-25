@@ -13,7 +13,13 @@ import android.provider.Settings
 import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -46,12 +52,14 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -69,6 +77,8 @@ import androidx.navigation.compose.rememberNavController
 import com.nullscroll.morninglock.data.MorningLockDatabase
 import com.nullscroll.morninglock.ui.theme.MorningLockTheme
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 internal val DotGothic = FontFamily(Font(R.font.dotgothic16))
 internal val Inter = FontFamily(Font(R.font.inter_latin))
@@ -120,7 +130,7 @@ internal fun appColors(dark: Boolean) = if (dark) {
 
 class MainActivity : ComponentActivity() {
     private var usageAccessGranted by mutableStateOf(false)
-    private var alarmAccess by mutableStateOf(AlarmAccessStatus(false, false, false))
+    private var alarmAccess by mutableStateOf(AlarmAccessStatus(false, false, false, false))
     private var darkThemeEnabled by mutableStateOf(false)
     private var systemDarkTheme = false
 
@@ -229,17 +239,56 @@ private fun MorningLockApp(usageAccessGranted: Boolean, alarmAccess: AlarmAccess
     }
     val draft = remember { NightBeforeDraft() }
     val nav = rememberNavController()
-    var showSplash by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) {
-        delay(1_500)
-        showSplash = false
+    val activeSession by dao.activeSession().collectAsState(initial = null)
+    SideEffect {
+        (context as? android.app.Activity)?.let { activity ->
+            activity.setShowWhenLocked(activeSession != null)
+            activity.setTurnScreenOn(activeSession != null)
+        }
     }
+    var showSplash by remember { mutableStateOf(true) }
+    LaunchedEffect(activeSession?.id) {
+        if (activeSession != null) {
+            showSplash = false
+        } else if (showSplash) {
+            delay(1_500)
+            showSplash = false
+        }
+    }
+    LaunchedEffect(activeSession?.id, showSplash) {
+        if (showSplash) return@LaunchedEffect
+        val session = activeSession
+        if (session != null) {
+            val deadlineArmed = session.ceilingAtEpochMillis?.let {
+                runCatching { SessionDeadline.schedule(context, session.id, it) }.isSuccess
+            } ?: false
+            if (!deadlineArmed) {
+                withContext(Dispatchers.IO) { dao.endSession(session.id, System.currentTimeMillis()) }
+                return@LaunchedEffect
+            }
+            if (usageAccessGranted) runCatching { SessionMonitor.start(context, session.id) }
+            if (nav.currentDestination?.route != "morning") {
+                nav.navigate("morning") { popUpTo(nav.graph.startDestinationId) { inclusive = true } }
+            }
+        } else if (nav.currentDestination?.route == "morning") {
+            SessionMonitor.stop(context)
+            nav.navigate("onboarding") { popUpTo(nav.graph.startDestinationId) { inclusive = true } }
+        }
+    }
+    BackHandler(enabled = activeSession != null) { }
 
     CompositionLocalProvider(LocalTextStyle provides MaterialTheme.typography.bodyLarge.copy(fontFamily = Inter)) {
         if (showSplash) {
             NullScrollSplash(darkTheme)
         } else {
-            NavHost(navController = nav, startDestination = screens.first().route) {
+            NavHost(
+                navController = nav,
+                startDestination = if (activeSession != null) "morning" else screens.first().route,
+                enterTransition = { fadeIn(tween(150)) + slideInHorizontally(tween(150)) { it / 24 } },
+                exitTransition = { fadeOut(tween(100)) + slideOutHorizontally(tween(100)) { -it / 24 } },
+                popEnterTransition = { fadeIn(tween(150)) + slideInHorizontally(tween(150)) { -it / 24 } },
+                popExitTransition = { fadeOut(tween(100)) + slideOutHorizontally(tween(100)) { it / 24 } }
+            ) {
                 composable("onboarding") {
                     ScreenFrame(
                         screen = screens[0], page = 1, pageCount = 4, usageAccessGranted = usageAccessGranted,
@@ -260,9 +309,22 @@ private fun MorningLockApp(usageAccessGranted: Boolean, alarmAccess: AlarmAccess
                     PlanReviewScreen(draft, dao, darkTheme, onToggleTheme,
                         onBack = { nav.popBackStack() }, onDone = { nav.navigate("onboarding") { popUpTo("onboarding") { inclusive = false } } })
                 }
-                screens.drop(4).forEachIndexed { index, screen ->
+                composable("morning") {
+                    val session = activeSession
+                    if (session != null) {
+                        MorningLockScreen(session, dao, darkTheme, onToggleTheme)
+                    } else {
+                        ScreenFrame(
+                            screen = screens[0], page = 1, pageCount = 4,
+                            usageAccessGranted = usageAccessGranted, alarmAccess = alarmAccess,
+                            dark = darkTheme, onToggleTheme = onToggleTheme,
+                            onPrimary = { nav.navigate("plan") }, onSecondary = { }
+                        )
+                    }
+                }
+                screens.drop(4).filter { it.route != "morning" }.forEach { screen ->
                     composable(screen.route) {
-                        val page = index + 5
+                        val page = screens.indexOf(screen) + 1
                         ScreenFrame(
                             screen = screen,
                             page = page,
@@ -375,7 +437,7 @@ private fun ScreenFrame(
                         }
                     }
                 }
-                if (!requiredAccessReady || !alarmAccess.fullScreenAllowed) {
+                if (!requiredAccessReady || !alarmAccess.fullScreenAllowed || !alarmAccess.overlayAllowed) {
                     Spacer(Modifier.height(14.dp))
                     RequiredAccessPanel(
                         usageAccessGranted = usageAccessGranted,
@@ -390,7 +452,8 @@ private fun ScreenFrame(
                             else context.startActivity(notificationSettingsIntent(context))
                         },
                         onExactAlarms = { context.startActivity(exactAlarmSettingsIntent(context)) },
-                        onFullScreen = { context.startActivity(fullScreenSettingsIntent(context)) }
+                        onFullScreen = { context.startActivity(fullScreenSettingsIntent(context)) },
+                        onOverlay = { context.startActivity(overlaySettingsIntent(context)) }
                     )
                 }
             } else {
@@ -450,7 +513,8 @@ private fun RequiredAccessPanel(
     onUsageAccess: () -> Unit,
     onNotifications: () -> Unit,
     onExactAlarms: () -> Unit,
-    onFullScreen: () -> Unit
+    onFullScreen: () -> Unit,
+    onOverlay: () -> Unit
 ) {
     BrandPanel(colors, dark, inset = 18.dp) {
         Text("REQUIRED ACCESS", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
@@ -497,6 +561,14 @@ private fun RequiredAccessPanel(
             Text("Allow this if you want the alarm to open over your lock screen. Without it, Android shows an alarm notification you can tap.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
             Spacer(Modifier.height(8.dp))
             BrandButton("ALLOW FULL-SCREEN ALARMS", colors, dark, secondary = true, onClick = onFullScreen)
+        }
+        if (!alarmAccess.overlayAllowed) {
+            Spacer(Modifier.height(14.dp))
+            Text("OVERLAY BACKSTOP · OPTIONAL", color = colors.text, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 0.6.sp)
+            Spacer(Modifier.height(5.dp))
+            Text("An overlay provides a backup way to return to the lock screen if Android blocks the foreground check.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+            Spacer(Modifier.height(8.dp))
+            BrandButton("ALLOW OVERLAY BACKSTOP", colors, dark, secondary = true, onClick = onOverlay)
         }
     }
 }
