@@ -15,6 +15,9 @@ data class PlanEntity(
     val locked: Boolean = false,
     @ColumnInfo(defaultValue = "30") val baseBudgetMinutes: Int = 30,
     @ColumnInfo(defaultValue = "0") val extensionMinutes: Int = 0,
+    @ColumnInfo(defaultValue = "0") val snoozesUsed: Int = 0,
+    val nextAlarmAtEpochMillis: Long? = null,
+    val alarmDismissedAtEpochMillis: Long? = null,
     val createdAtEpochMillis: Long = System.currentTimeMillis()
 )
 

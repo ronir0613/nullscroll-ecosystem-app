@@ -62,7 +62,6 @@ import androidx.compose.ui.unit.sp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.room.Room
 import com.nullscroll.morninglock.data.MorningLockDatabase
 import com.nullscroll.morninglock.ui.theme.MorningLockTheme
 import kotlinx.coroutines.delay
@@ -219,10 +218,7 @@ class MainActivity : ComponentActivity() {
 private fun MorningLockApp(usageAccessGranted: Boolean, darkTheme: Boolean, onToggleTheme: () -> Unit) {
     val context = LocalContext.current
     val dao = remember {
-        Room.databaseBuilder(context.applicationContext, MorningLockDatabase::class.java, "morning-lock.db")
-            .addMigrations(MorningLockDatabase.MIGRATION_1_2)
-            .build()
-            .dao()
+        MorningLockDatabase.open(context).dao()
     }
     val draft = remember { NightBeforeDraft() }
     val nav = rememberNavController()

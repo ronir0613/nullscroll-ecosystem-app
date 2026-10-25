@@ -36,7 +36,7 @@ These are accepted consumer-device escape routes. The product must disclose the 
 ## Next milestones
 
 - Milestone 2 implements the night-before flow and makes a saved plan immutable except for positive time extensions during the morning.
-- Milestone 3 implements exact alarm scheduling, snoozes and boot re-arming.
+- Milestone 3 implements exact alarm scheduling, snoozes and boot re-arming. Dismissing the alarm records the beginning of a session; the lock engine is milestone 4.
 - Milestone 4 prototypes the Usage Access foreground monitor and best-effort return-to-lock behavior. The deadline and emergency route remain independent of that service.
 
 ## Milestone 2 plan defaults
@@ -51,3 +51,11 @@ These are accepted consumer-device escape routes. The product must disclose the 
 - Room version 2 adds the 30-minute base budget and an extension counter. Version 1 databases migrate with defaults of 30 and 0.
 - The app does not schedule an alarm yet; exact alarms and snoozes are milestone 3.
 - A temporary plan-date picker is present for milestone testing. It defaults to tomorrow and allows today or a future date; remove the picker after all tests are complete.
+
+## Milestone 3 alarm behavior
+
+- Locked plans schedule with `AlarmManager.setAlarmClock`; selected local date and time determine the trigger. A same-day alarm time already in the past fires immediately, which keeps the temporary same-day test path usable.
+- API 33 and later use `USE_EXACT_ALARM` because the alarm is core app functionality. API 31–32 use `SCHEDULE_EXACT_ALARM` special access. Android 13+ notification permission is requested from plan review before saving and scheduling.
+- Android 14+ full-screen-intent access is explained and linked from plan review. If the user does not grant it, Android can show the alarm as a heads-up notification instead.
+- The alarm can be snoozed twice, five minutes each. Snooze count and next trigger are stored on the plan so reboot re-arming preserves an in-progress snooze. Final dismissal records one `MorningSession` with the final-dismissal time and snooze count.
+- `BOOT_COMPLETED` restores not-yet-dismissed alarms from Room. The alarm flow does not enforce the morning lock yet; app monitoring, the task lock, crash resume and session ceiling are milestone 4 and later.

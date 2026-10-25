@@ -6,6 +6,7 @@ import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.ContactsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -87,6 +88,7 @@ internal class NightBeforeDraft {
     var lookedUpDate by mutableStateOf<LocalDate?>(null)
     var selectionsLoaded by mutableStateOf(false)
     var saving by mutableStateOf(false)
+    var alarmScheduled by mutableStateOf(false)
 
     fun selectPlanDate(date: LocalDate) {
         if (date == planDate) return
@@ -95,6 +97,7 @@ internal class NightBeforeDraft {
         lockedTasks.clear()
         planLookupComplete = false
         lookedUpDate = null
+        alarmScheduled = false
     }
 }
 
@@ -112,12 +115,6 @@ private fun planDateShortLabel(date: LocalDate): String = when (date) {
     LocalDate.now() -> "TODAY · ${planDateText(date)}"
     LocalDate.now().plusDays(1) -> "TOMORROW · ${planDateText(date)}"
     else -> planDateText(date).uppercase(Locale.getDefault())
-}
-
-private fun planLockLabel(date: LocalDate): String = when (date) {
-    LocalDate.now() -> "LOCK TODAY'S PLAN"
-    LocalDate.now().plusDays(1) -> "LOCK TOMORROW'S PLAN"
-    else -> "LOCK PLAN FOR ${date.format(DateTimeFormatter.ofPattern("MMM d", Locale.getDefault())).uppercase(Locale.getDefault())}"
 }
 
 private suspend fun NightBeforeDraft.ensureExistingPlan(dao: MorningLockDao) {
@@ -481,9 +478,23 @@ internal fun PlanReviewScreen(
     onBack: () -> Unit,
     onDone: () -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var ready by remember { mutableStateOf(false) }
+    var alarmAccess by remember { mutableStateOf(alarmAccessStatus(context)) }
+    val notificationPermissionRequest = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        alarmAccess = alarmAccessStatus(context)
+    }
+    val notificationSettings = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        alarmAccess = alarmAccessStatus(context)
+    }
+    val exactAlarmSettings = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        alarmAccess = alarmAccessStatus(context)
+    }
+    val fullScreenSettings = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        alarmAccess = alarmAccessStatus(context)
+    }
     val selectedDate = draft.planDate
     LaunchedEffect(draft, selectedDate) {
         draft.ensureExistingPlan(dao)
@@ -491,6 +502,8 @@ internal fun PlanReviewScreen(
     }
     if (!ready) return
     val existing = draft.existingPlan?.locked == true
+    val existingPlanPending = existing && draft.existingPlan?.alarmDismissedAtEpochMillis == null
+    val requiredAlarmAccessReady = alarmAccess.notificationsAllowed && alarmAccess.exactAlarmsAllowed
     val planTasks = if (existing) draft.lockedTasks.toList() else draft.tasks.mapIndexed { index, task ->
         TaskEntity(planId = 0, label = task.label, type = task.type, durationMinutes = task.durationMinutes, position = index)
     }
@@ -508,11 +521,34 @@ internal fun PlanReviewScreen(
         body = if (existing) "This saved plan is read-only. In the morning, you may extend the time but never shorten it." else "Check the alarm, task order, and safety choices before saving. Saving locks the plan.",
         dark = dark,
         onToggleTheme = onToggleTheme,
-        primaryLabel = if (existing) "BACK TO HOME" else if (draft.saving) "SAVING PLAN" else planLockLabel(selectedDate),
-        primaryEnabled = canLock && !draft.saving,
+        primaryLabel = when {
+            existing && (!existingPlanPending || draft.alarmScheduled) -> "BACK TO HOME"
+            existing -> "SCHEDULE ALARM"
+            draft.saving -> "SAVING PLAN"
+            else -> "LOCK PLAN & SET ALARM"
+        },
+        primaryEnabled = if (existing) true else canLock && requiredAlarmAccessReady && !draft.saving,
         onPrimary = {
             if (existing) {
-                onDone()
+                val existingPlan = draft.existingPlan!!
+                if (existingPlanPending && !draft.alarmScheduled) {
+                    if (!requiredAlarmAccessReady) {
+                        error = "Allow notifications and exact alarms before scheduling this plan."
+                    } else {
+                        scope.launch {
+                            try {
+                                AlarmScheduler.schedule(context, existingPlan)
+                                draft.alarmScheduled = true
+                                error = null
+                                onDone()
+                            } catch (failure: Exception) {
+                                error = failure.message ?: "The alarm could not be scheduled."
+                            }
+                        }
+                    }
+                } else {
+                    onDone()
+                }
             } else {
                 scope.launch {
                     draft.saving = true
@@ -524,7 +560,12 @@ internal fun PlanReviewScreen(
                         mode = draft.mode,
                         locked = true,
                         baseBudgetMinutes = PlanRules.DEFAULT_BUDGET_MINUTES,
-                        extensionMinutes = 0
+                        extensionMinutes = 0,
+                        nextAlarmAtEpochMillis = com.nullscroll.morninglock.data.AlarmRules.alarmAtEpochMillis(
+                            date,
+                            draft.alarmTime,
+                            ZoneId.systemDefault()
+                        )
                     )
                     val people = draft.closeOnes.map { it.copy(id = 0) }
                     val apps = draft.allowedApps.map { it.copy(id = 0, isHealthOrSafety = true) }
@@ -538,14 +579,48 @@ internal fun PlanReviewScreen(
                         draft.lockedTasks.clear()
                         draft.lockedTasks.addAll(dao.loadTasksForPlan(savedId))
                         draft.planLookupComplete = true
+                        draft.lookedUpDate = draft.planDate
+                        val savedPlan = draft.existingPlan
+                        if (savedPlan != null) {
+                            try {
+                                AlarmScheduler.schedule(context, savedPlan)
+                                draft.alarmScheduled = true
+                            } catch (failure: Exception) {
+                                error = "Plan saved, but the alarm could not be scheduled: ${failure.message ?: "check alarm access."}"
+                            }
+                        }
                     }
                     draft.saving = false
                 }
             }
         },
-        secondaryLabel = if (existing) null else "BACK",
-        onSecondary = onBack
+        secondaryLabel = if (existing) "BACK TO HOME" else "BACK",
+        onSecondary = if (existing) onDone else onBack
     ) {
+        AlarmAccessPanel(
+            status = alarmAccess,
+            dark = dark,
+            onRequestNotifications = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notificationPermissionRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    notificationSettings.launch(notificationSettingsIntent(context))
+                }
+            },
+            onRequestExactAlarm = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    exactAlarmSettings.launch(exactAlarmSettingsIntent(context))
+                }
+            },
+            onRequestFullScreen = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    fullScreenSettings.launch(fullScreenSettingsIntent(context))
+                }
+            }
+        )
+        Spacer(Modifier.height(14.dp))
         FlowPanel(dark) {
             SummaryRow("ALARM", "${planDateText(selectedDate)} · ${draft.existingPlan?.alarmTime ?: draft.alarmTime}", dark)
             SummaryRow("MODE", draft.existingPlan?.mode ?: draft.mode, dark)
@@ -575,6 +650,46 @@ internal fun PlanReviewScreen(
         error?.let {
             Spacer(Modifier.height(8.dp))
             Text(it, color = SiteRed, fontSize = 12.sp, lineHeight = 18.sp)
+        }
+    }
+}
+
+@Composable
+private fun AlarmAccessPanel(
+    status: AlarmAccessStatus,
+    dark: Boolean,
+    onRequestNotifications: () -> Unit,
+    onRequestExactAlarm: () -> Unit,
+    onRequestFullScreen: () -> Unit
+) {
+    val colors = appColors(dark)
+    Column {
+        Text("ALARM ACCESS", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.2.sp)
+        Spacer(Modifier.height(8.dp))
+        FlowPanel(dark, inset = 15.dp) {
+            Text("Notifications are needed so the alarm can ring and show its actions.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+            Spacer(Modifier.height(8.dp))
+            Text(if (status.notificationsAllowed) "NOTIFICATIONS · READY" else "NOTIFICATIONS · REQUIRED", color = if (status.notificationsAllowed) colors.text else SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Text(if (status.exactAlarmsAllowed) "EXACT ALARMS · READY" else "EXACT ALARMS · REQUIRED", color = if (status.exactAlarmsAllowed) colors.text else SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(6.dp))
+            Text(if (status.fullScreenAllowed) "FULL-SCREEN ALARM · READY" else "FULL-SCREEN ALARM · HEADS-UP FALLBACK", color = if (status.fullScreenAllowed) colors.text else colors.secondaryText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            if (!status.notificationsAllowed) {
+                Spacer(Modifier.height(8.dp))
+                FlowButton("ALLOW NOTIFICATIONS", dark, secondary = true, onClick = onRequestNotifications)
+            }
+            if (!status.exactAlarmsAllowed) {
+                Spacer(Modifier.height(12.dp))
+                Text("Exact alarm access is needed to ring at the time you choose.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+                Spacer(Modifier.height(7.dp))
+                FlowButton("ALLOW EXACT ALARMS", dark, secondary = true, onClick = onRequestExactAlarm)
+            }
+            if (!status.fullScreenAllowed) {
+                Spacer(Modifier.height(12.dp))
+                Text("Full-screen access lets the alarm open over the lock screen. Without it, Android shows an alarm notification you can tap.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+                Spacer(Modifier.height(7.dp))
+                FlowButton("ALLOW FULL-SCREEN ALARMS", dark, secondary = true, onClick = onRequestFullScreen)
+            }
         }
     }
 }
