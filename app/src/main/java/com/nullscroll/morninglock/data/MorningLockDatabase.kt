@@ -21,11 +21,14 @@ interface MorningLockDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertTasks(tasks: List<TaskEntity>)
 
-    @Query("SELECT * FROM plans WHERE date = :date LIMIT 1")
-    suspend fun planForDate(date: String): PlanEntity?
+    @Query("SELECT * FROM plans WHERE date = :date AND isTemporaryTest = :isTemporaryTest LIMIT 1")
+    suspend fun planForDate(date: String, isTemporaryTest: Boolean = false): PlanEntity?
 
     @Query("SELECT * FROM plans WHERE id = :planId LIMIT 1")
     suspend fun planById(planId: Long): PlanEntity?
+
+    @Query("SELECT * FROM plans WHERE locked = 1 AND isTemporaryTest = 0 ORDER BY date DESC LIMIT 1")
+    suspend fun latestProductionPlan(): PlanEntity?
 
     @Query("SELECT * FROM morning_sessions WHERE planId = :planId AND endedAtEpochMillis IS NULL ORDER BY dismissedAtEpochMillis DESC LIMIT 1")
     suspend fun activeSessionForPlan(planId: Long): MorningSessionEntity?
@@ -49,13 +52,11 @@ interface MorningLockDao {
         closeOnes: List<CloseOneEntity>,
         allowedApps: List<AllowedAppEntity>
     ): Long? {
-        if (planForDate(plan.date) != null) return null
+        if (planForDate(plan.date, plan.isTemporaryTest) != null) return null
         val planId = insertPlan(plan.copy(locked = true))
         insertTasks(tasks.map { it.copy(planId = planId) })
-        clearCloseOnes()
-        if (closeOnes.isNotEmpty()) insertCloseOnes(closeOnes)
-        clearAllowedApps()
-        if (allowedApps.isNotEmpty()) insertAllowedApps(allowedApps)
+        if (closeOnes.isNotEmpty()) insertCloseOnes(closeOnes.map { it.copy(id = 0, planId = planId) })
+        if (allowedApps.isNotEmpty()) insertAllowedApps(allowedApps.map { it.copy(id = 0, planId = planId) })
         return planId
     }
 
@@ -100,14 +101,16 @@ interface MorningLockDao {
             dismissedAtEpochMillis,
             plan.baseBudgetMinutes,
             tasks.sumOf { it.durationMinutes },
-            plan.extensionMinutes
+            plan.extensionMinutes,
+            plan.testMode
         )
         insertSession(
             MorningSessionEntity(
                 planId = planId,
                 dismissedAtEpochMillis = dismissedAtEpochMillis,
                 snoozes = plan.snoozesUsed,
-                ceilingAtEpochMillis = ceiling
+                ceilingAtEpochMillis = ceiling,
+                testMode = plan.testMode
             )
         )
         return true
@@ -129,7 +132,7 @@ interface MorningLockDao {
                 startedAtEpochMillis
             )) return false
         val task = tasks[session.activeTaskIndex]
-        val end = SessionRules.taskEndAtEpochMillis(startedAtEpochMillis, task.durationMinutes, ceiling)
+        val end = SessionRules.taskEndAtEpochMillis(startedAtEpochMillis, task.durationMinutes, ceiling, session.testMode)
         return setActiveTaskTimer(sessionId, session.activeTaskIndex, startedAtEpochMillis, end) == 1
     }
 
@@ -159,41 +162,67 @@ interface MorningLockDao {
     @Query("UPDATE morning_sessions SET endedAtEpochMillis = :endedAtEpochMillis, activeTaskStartedAtEpochMillis = NULL, activeTaskEndsAtEpochMillis = NULL WHERE id = :sessionId AND endedAtEpochMillis IS NULL")
     suspend fun endSession(sessionId: Long, endedAtEpochMillis: Long): Int
 
+    @Query("UPDATE morning_sessions SET callCount = callCount + 1 WHERE id = :sessionId AND endedAtEpochMillis IS NULL")
+    suspend fun recordCloseOneDialerLaunch(sessionId: Long): Int
+
     @Query("SELECT * FROM tasks WHERE planId = :planId ORDER BY position")
     fun tasksForPlan(planId: Long): Flow<List<TaskEntity>>
 
     @Query("UPDATE plans SET locked = 1 WHERE id = :planId AND locked = 0")
     suspend fun lockPlan(planId: Long): Int
 
-    @Query("SELECT * FROM allowed_apps ORDER BY displayName")
-    fun allowedApps(): Flow<List<AllowedAppEntity>>
-
-    @Query("SELECT * FROM allowed_apps ORDER BY displayName")
-    suspend fun loadAllowedApps(): List<AllowedAppEntity>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun saveAllowedApp(app: AllowedAppEntity)
+    @Query("SELECT * FROM plan_allowed_apps WHERE planId = :planId ORDER BY displayName")
+    suspend fun loadAllowedApps(planId: Long): List<AllowedAppEntity>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAllowedApps(apps: List<AllowedAppEntity>)
 
-    @Query("DELETE FROM allowed_apps")
-    suspend fun clearAllowedApps()
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun saveCloseOne(closeOne: CloseOneEntity)
-
-    @Query("SELECT * FROM close_ones ORDER BY displayName")
-    suspend fun loadCloseOnes(): List<CloseOneEntity>
+    @Query("SELECT * FROM plan_close_ones WHERE planId = :planId ORDER BY displayName")
+    suspend fun loadCloseOnes(planId: Long): List<CloseOneEntity>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertCloseOnes(closeOnes: List<CloseOneEntity>)
 
-    @Query("DELETE FROM close_ones")
-    suspend fun clearCloseOnes()
+    @Query("SELECT id FROM plans WHERE isTemporaryTest = 1")
+    suspend fun temporaryTestPlanIds(): List<Long>
+
+    @Query("SELECT id FROM morning_sessions WHERE planId IN (SELECT id FROM plans WHERE isTemporaryTest = 1)")
+    suspend fun temporaryTestSessionIds(): List<Long>
+
+    @Query("DELETE FROM morning_sessions WHERE planId IN (SELECT id FROM plans WHERE isTemporaryTest = 1)")
+    suspend fun deleteTemporaryTestSessions(): Int
+
+    @Query("DELETE FROM plans WHERE isTemporaryTest = 1")
+    suspend fun deleteTemporaryTestPlans(): Int
+
+    @Transaction
+    suspend fun clearTemporaryTestData(): TemporaryTestDataIds {
+        val planIds = temporaryTestPlanIds()
+        val sessionIds = temporaryTestSessionIds()
+        deleteTemporaryTestSessions()
+        deleteTemporaryTestPlans()
+        return TemporaryTestDataIds(planIds, sessionIds)
+    }
 
     @Query("SELECT * FROM morning_sessions ORDER BY dismissedAtEpochMillis DESC")
     fun sessions(): Flow<List<MorningSessionEntity>>
+
+    @Query("""
+        SELECT plans.date AS planDate,
+               plans.isTemporaryTest AS isTemporaryTest,
+               morning_sessions.id IS NOT NULL AS hasSession,
+               COUNT(DISTINCT tasks.id) AS plannedTasks,
+               COUNT(DISTINCT task_results.id) AS completedTasks,
+               COALESCE(morning_sessions.callCount, 0) AS callLaunches,
+               COALESCE(morning_sessions.snoozes, plans.snoozesUsed) AS snoozes
+        FROM plans
+        LEFT JOIN morning_sessions ON morning_sessions.planId = plans.id
+        LEFT JOIN tasks ON tasks.planId = plans.id
+        LEFT JOIN task_results ON task_results.sessionId = morning_sessions.id AND task_results.taskId = tasks.id
+        GROUP BY plans.id, morning_sessions.id
+        ORDER BY plans.date ASC
+    """)
+    fun streakHistory(): Flow<List<StreakHistoryRow>>
 
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertSession(session: MorningSessionEntity): Long
@@ -204,17 +233,26 @@ interface MorningLockDao {
 
 @Database(
     entities = [PlanEntity::class, TaskEntity::class, CloseOneEntity::class, AllowedAppEntity::class, MorningSessionEntity::class, TaskResultEntity::class],
-    version = 4,
+    version = 6,
     exportSchema = true
 )
 abstract class MorningLockDatabase : RoomDatabase() {
     abstract fun dao(): MorningLockDao
 
     companion object {
-        fun open(context: Context): MorningLockDatabase =
-            Room.databaseBuilder(context.applicationContext, MorningLockDatabase::class.java, "morning-lock.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        @Volatile
+        private var instance: MorningLockDatabase? = null
+
+        fun open(context: Context): MorningLockDatabase = instance ?: synchronized(this) {
+            instance ?: Room.databaseBuilder(
+                context.applicationContext,
+                MorningLockDatabase::class.java,
+                "morning-lock.db"
+            )
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
+                .also { instance = it }
+        }
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -238,6 +276,30 @@ abstract class MorningLockDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE morning_sessions ADD COLUMN activeTaskStartedAtEpochMillis INTEGER")
                 db.execSQL("ALTER TABLE morning_sessions ADD COLUMN activeTaskEndsAtEpochMillis INTEGER")
                 db.execSQL("UPDATE morning_sessions SET ceilingAtEpochMillis = dismissedAtEpochMillis + ((COALESCE((SELECT baseBudgetMinutes + extensionMinutes FROM plans WHERE plans.id = morning_sessions.planId), 30) + COALESCE((SELECT SUM(durationMinutes) FROM tasks WHERE tasks.planId = morning_sessions.planId), 0) + 20) * 60000) WHERE ceilingAtEpochMillis IS NULL")
+            }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE plans ADD COLUMN testMode INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE morning_sessions ADD COLUMN testMode INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE plans ADD COLUMN isTemporaryTest INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE plans SET isTemporaryTest = testMode")
+                db.execSQL("DROP INDEX IF EXISTS index_plans_date")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_plans_date_isTemporaryTest ON plans(date, isTemporaryTest)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS plan_close_ones (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, planId INTEGER NOT NULL, displayName TEXT NOT NULL, phoneNumber TEXT NOT NULL, contactLookupKey TEXT NOT NULL, FOREIGN KEY(planId) REFERENCES plans(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_plan_close_ones_planId_contactLookupKey ON plan_close_ones(planId, contactLookupKey)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS plan_allowed_apps (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, planId INTEGER NOT NULL, packageName TEXT NOT NULL, displayName TEXT NOT NULL, isHealthOrSafety INTEGER NOT NULL, FOREIGN KEY(planId) REFERENCES plans(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_plan_allowed_apps_planId_packageName ON plan_allowed_apps(planId, packageName)")
+                db.execSQL("INSERT INTO plan_close_ones (planId, displayName, phoneNumber, contactLookupKey) SELECT plans.id, close_ones.displayName, close_ones.phoneNumber, close_ones.contactLookupKey FROM plans CROSS JOIN close_ones WHERE plans.locked = 1")
+                db.execSQL("INSERT INTO plan_allowed_apps (planId, packageName, displayName, isHealthOrSafety) SELECT plans.id, allowed_apps.packageName, allowed_apps.displayName, allowed_apps.isHealthOrSafety FROM plans CROSS JOIN allowed_apps WHERE plans.locked = 1")
+                db.execSQL("DROP TABLE close_ones")
+                db.execSQL("DROP TABLE allowed_apps")
             }
         }
     }

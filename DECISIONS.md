@@ -36,8 +36,7 @@ These are accepted consumer-device escape routes. The product must disclose the 
 ## Next milestones
 
 - Milestones 1–5 implement the onboarding and plan flow, alarm/snooze/reboot handling, user-exitable lock engine, session ceiling, and sequential task runner.
-- Milestone 6 adds close-ones calling, incoming-call handling, emergency-call routing and call counting. Emergency dialing remains available independently of the monitor.
-- Milestone 7 adds allow-list hardening; milestone 8 adds the streak calendar; milestone 9 hardens OEM/battery behavior and completes the manual test checklist.
+- Milestones 6–9 add close-one dialer launches and local counts, plan-scoped safety choices, a production streak calendar, reliability guidance, and a separate Test Lab. Phone/OEM verification remains a manual checklist in `docs/device-test-checklist.md`.
 
 ## Milestone 2 plan defaults
 
@@ -49,7 +48,7 @@ These are accepted consumer-device escape routes. The product must disclose the 
 - The app allow-list uses launchable activities declared through the manifest's `<queries>` intent. Android does not identify a user's health/safety apps reliably, so the user chooses which launchable apps to mark as health/safety.
 - Lock-in saves the plan, ordered tasks, close ones, and allowed apps transactionally. A second plan for the same date is refused. The morning extension is guarded in Room and accepts positive minutes only.
 - Room version 2 adds the 30-minute base budget and an extension counter. Version 1 databases migrate with defaults of 30 and 0.
-- A temporary plan-date picker is present for milestone testing. It defaults to tomorrow and allows today or a future date; remove the picker after all tests are complete.
+- Production plan dates and task durations stay in the ordinary plan flow. Temporary dates and accelerated timers are isolated in Test Lab, where same-day test and production plans can coexist.
 
 ## Milestone 3 alarm behavior
 
@@ -66,5 +65,17 @@ These are accepted consumer-device escape routes. The product must disclose the 
 - A `specialUse` foreground service checks `UsageStatsManager` events about once per second. It allows Morning Lock, user-selected health/safety packages, and the default/system dialer and in-call UI. Other foreground packages trigger the Home lock activity; when overlay access is granted, a full-screen overlay is an additional backstop.
 - Screen pinning is opt-in. Android's pinning gesture, reboot, safe mode, uninstall, and system controls remain user exits. The lock does not use AccessibilityService or Device Owner APIs.
 - Task index, timer start/end timestamps, and task results are saved in Room v4. Timers resume from their persisted end time; a task cannot be confirmed before zero. Completion requires a tap; the final task or independent deadline ends the session.
-- Emergency access launches the system dialer at 112 from the morning lock and its overlay. The dialer is permitted while the session runs. Close-ones calling, call counting, and streak calendar remain later milestones.
+- Room v5 adds a temporary test-mode flag to plans and sessions. Test plans keep their configured task minutes, but active timers use five seconds and the independent session deadline is 25 seconds from final alarm dismissal. The toggle is off by default and cannot be changed after plan lock-in.
+- Emergency access launches the system dialer at 112 from the morning lock and its overlay. The dialer is permitted while the session runs.
 - Android 14+ requires the `specialUse` foreground-service permission and a service subtype declaration; Play review may still assess the declared use case. OEM process management and overlay behavior require real-device hardening.
+
+## Milestones 6–9 implementation decisions
+
+- Close-one buttons use `ACTION_DIAL`; a count is added only after the dialer intent launches successfully during an active session. Emergency launches and incoming calls do not count. The count records launches, not connected calls.
+- Incoming and in-call interfaces remain Android-controlled. The monitor allows dynamically resolved dialer and default in-call packages plus narrow compatibility package names. Morning Lock does not become the default dialer.
+- Safety-app and close-one selections are stored per plan. Before launching a safety app, Morning Lock confirms it still has a launchable activity and reports an unavailable selection.
+- A streak day requires every planned task to have been confirmed in a production session. Test plans are explicitly marked, excluded from streaks, and test cleanup deletes only test-tagged plans, sessions, task results, and alarms.
+- Test Lab has immediate and scheduled alarm paths, five-second task timers, a 25-second deadline, and copies safety selections from the latest regular plan. Its alarm, session, timer, and deadline use the same pipeline as production.
+- Reliability status distinguishes required Usage Access, notifications and exact alarms from optional full-screen, overlay, and battery settings. Battery exemption is never requested automatically; users are sent to Android Settings. The independent session deadline and emergency dialer do not depend on these grants.
+- Boot and app-update recovery re-arm pending alarms and resume active sessions only while their original deadline remains in the future. If foreground monitoring hits a platform error, it stops; the independent deadline remains responsible for ending the session. Android/OEM behavior is best-effort and is not guaranteed.
+- Accepted exits remain reboot, safe mode, force stop/uninstall, system UI, and screen-pinning exit. The app promises a return to the lock within about a second when Android permits it, not that other apps are unreachable.

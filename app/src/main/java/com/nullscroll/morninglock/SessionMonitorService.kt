@@ -25,6 +25,7 @@ import androidx.core.content.ContextCompat
 import com.nullscroll.morninglock.data.LockRules
 import com.nullscroll.morninglock.data.MorningLockDatabase
 import com.nullscroll.morninglock.data.MorningSessionEntity
+import com.nullscroll.morninglock.data.PlanIsolationRules
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,12 +49,19 @@ internal object SessionMonitor {
     }
 }
 
+/** Shared in-process signal so the service can avoid covering an already resumed lock screen. */
+internal object LockScreenVisibility {
+    @Volatile
+    var isVisible: Boolean = false
+}
+
 internal class SessionMonitorService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var monitorJob: Job? = null
     private var sessionId: Long = -1L
     private var lastForegroundPackage: String? = null
     private var initialUsageQuery = true
+    private var lockReturnRequestedAt: Long? = null
     private var overlay: View? = null
     private val dao by lazy { MorningLockDatabase.open(this).dao() }
 
@@ -135,13 +143,25 @@ internal class SessionMonitorService : Service() {
                 }
 
                 val foreground = queryForegroundPackage()
-                if (foreground != null) {
-                    val allowed = loadAllowedPackages()
+                if (LockScreenVisibility.isVisible) {
+                    // Usage events can briefly lag the activity transition. The resumed lock UI
+                    // is enough to enforce the session; a full-screen overlay would block its buttons.
+                    lockReturnRequestedAt = null
+                    withContext(Dispatchers.Main) { removeOverlay() }
+                } else if (foreground != null) {
+                    val allowed = loadAllowedPackages(session.planId)
                     if (LockRules.isAllowed(foreground, packageName, allowed, callUiPackages())) {
+                        lockReturnRequestedAt = null
                         withContext(Dispatchers.Main) { removeOverlay() }
                     } else {
-                        withContext(Dispatchers.Main) { showOverlayBackstop() }
-                        returnToMorningLock()
+                        val requestedAt = lockReturnRequestedAt
+                        if (requestedAt == null) {
+                            lockReturnRequestedAt = now
+                            returnToMorningLock()
+                        } else if (now - requestedAt >= OVERLAY_BACKSTOP_GRACE_MILLIS) {
+                            // Keep the overlay as a fallback only when Android did not resume our UI.
+                            withContext(Dispatchers.Main) { showOverlayBackstop() }
+                        }
                     }
                 }
                 delay(CHECK_INTERVAL_MILLIS)
@@ -152,6 +172,10 @@ internal class SessionMonitorService : Service() {
             // Usage access can be revoked while a session is active; the ceiling alarm remains scheduled.
             stopSelf()
         } catch (_: IllegalStateException) {
+            stopSelf()
+        } catch (_: Exception) {
+            // Fail open if the monitor hits an unexpected platform error. The separately
+            // scheduled deadline receiver remains responsible for ending the session.
             stopSelf()
         }
     }
@@ -176,16 +200,17 @@ internal class SessionMonitorService : Service() {
         return lastForegroundPackage
     }
 
-    private suspend fun loadAllowedPackages(): Set<String> =
-        dao.loadAllowedApps().mapTo(mutableSetOf()) { it.packageName }
+    private suspend fun loadAllowedPackages(planId: Long): Set<String> =
+        PlanIsolationRules.packagesForPlan(planId, dao.loadAllowedApps(planId))
 
     private fun callUiPackages(): Set<String> {
         val packages = mutableSetOf<String>()
-        packages += setOf("com.android.incallui", "com.android.phone", "com.samsung.android.incallui", "com.google.android.dialer")
+        // AOSP and Samsung expose their in-call activity separately; other OEM dialers are
+        // discovered from TelecomManager or the system ACTION_DIAL handler below.
+        packages += setOf("com.android.incallui", "com.samsung.android.incallui")
         val telecom = getSystemService(android.telecom.TelecomManager::class.java)
         telecom?.defaultDialerPackage?.let(packages::add)
-        val dialIntent = Intent(Intent.ACTION_DIAL)
-        packageManager.resolveActivity(dialIntent, 0)?.activityInfo?.packageName?.let(packages::add)
+        packageManager.resolveActivity(Intent(Intent.ACTION_DIAL), 0)?.activityInfo?.packageName?.let(packages::add)
         return packages
     }
 
@@ -252,6 +277,7 @@ internal class SessionMonitorService : Service() {
         private const val CHANNEL_ID = "morning_session"
         private const val NOTIFICATION_ID = 7302
         private const val CHECK_INTERVAL_MILLIS = 1_000L
+        private const val OVERLAY_BACKSTOP_GRACE_MILLIS = 1_500L
         private const val INITIAL_QUERY_WINDOW_MILLIS = 24 * 60 * 60 * 1000L
     }
 }

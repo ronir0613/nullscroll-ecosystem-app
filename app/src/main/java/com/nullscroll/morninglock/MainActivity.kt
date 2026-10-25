@@ -78,6 +78,7 @@ import com.nullscroll.morninglock.data.MorningLockDatabase
 import com.nullscroll.morninglock.ui.theme.MorningLockTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 
 internal val DotGothic = FontFamily(Font(R.font.dotgothic16))
@@ -155,9 +156,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        LockScreenVisibility.isVisible = true
         usageAccessGranted = hasUsageAccess()
         alarmAccess = alarmAccessStatus(this)
         refreshDeviceTheme()
+    }
+
+    override fun onPause() {
+        LockScreenVisibility.isVisible = false
+        super.onPause()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -258,6 +265,8 @@ private fun MorningLockApp(usageAccessGranted: Boolean, alarmAccess: AlarmAccess
     LaunchedEffect(activeSession?.id, showSplash) {
         if (showSplash) return@LaunchedEffect
         val session = activeSession
+        // Wait until NavHost has installed its graph before reading the current entry or navigating.
+        val currentRoute = nav.currentBackStackEntryFlow.first().destination.route
         if (session != null) {
             val deadlineArmed = session.ceilingAtEpochMillis?.let {
                 runCatching { SessionDeadline.schedule(context, session.id, it) }.isSuccess
@@ -267,12 +276,12 @@ private fun MorningLockApp(usageAccessGranted: Boolean, alarmAccess: AlarmAccess
                 return@LaunchedEffect
             }
             if (usageAccessGranted) runCatching { SessionMonitor.start(context, session.id) }
-            if (nav.currentDestination?.route != "morning") {
-                nav.navigate("morning") { popUpTo(nav.graph.startDestinationId) { inclusive = true } }
+            if (currentRoute != "morning") {
+                nav.navigate("morning") { popUpTo("onboarding") { inclusive = true } }
             }
-        } else if (nav.currentDestination?.route == "morning") {
+        } else if (currentRoute == "morning") {
             SessionMonitor.stop(context)
-            nav.navigate("onboarding") { popUpTo(nav.graph.startDestinationId) { inclusive = true } }
+            nav.navigate("onboarding") { popUpTo("morning") { inclusive = true } }
         }
     }
     BackHandler(enabled = activeSession != null) { }
@@ -294,7 +303,10 @@ private fun MorningLockApp(usageAccessGranted: Boolean, alarmAccess: AlarmAccess
                         screen = screens[0], page = 1, pageCount = 4, usageAccessGranted = usageAccessGranted,
                         alarmAccess = alarmAccess,
                         dark = darkTheme, onToggleTheme = onToggleTheme,
-                        onPrimary = { nav.navigate("plan") }, onSecondary = { }
+                        onPrimary = { nav.navigate("plan") }, onSecondary = { },
+                        onOpenStreaks = { nav.navigate("streaks") },
+                        onOpenTestLab = { nav.navigate("test-lab") },
+                        onOpenReliability = { nav.navigate("reliability") }
                     )
                 }
                 composable("plan") {
@@ -322,7 +334,16 @@ private fun MorningLockApp(usageAccessGranted: Boolean, alarmAccess: AlarmAccess
                         )
                     }
                 }
-                screens.drop(4).filter { it.route != "morning" }.forEach { screen ->
+                composable("streaks") {
+                    StreakCalendarScreen(dao, darkTheme, onToggleTheme) { nav.popBackStack() }
+                }
+                composable("test-lab") {
+                    TestLabScreen(dao, usageAccessGranted, darkTheme, onToggleTheme) { nav.popBackStack() }
+                }
+                composable("reliability") {
+                    ReliabilityScreen(usageAccessGranted, alarmAccess, darkTheme, onToggleTheme) { nav.popBackStack() }
+                }
+                screens.drop(4).filter { it.route != "morning" && it.route != "streaks" }.forEach { screen ->
                     composable(screen.route) {
                         val page = screens.indexOf(screen) + 1
                         ScreenFrame(
@@ -380,7 +401,10 @@ private fun ScreenFrame(
     dark: Boolean,
     onToggleTheme: () -> Unit,
     onPrimary: () -> Unit,
-    onSecondary: () -> Unit
+    onSecondary: () -> Unit,
+    onOpenStreaks: () -> Unit = {},
+    onOpenTestLab: () -> Unit = {},
+    onOpenReliability: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val colors = appColors(dark)
@@ -490,6 +514,14 @@ private fun ScreenFrame(
                 enabled = screen.route != "onboarding" || requiredAccessReady,
                 onClick = onPrimary
             )
+            if (screen.route == "onboarding") {
+                Spacer(Modifier.height(11.dp))
+                BrandButton("TEMPORARY TEST LAB", colors, dark, secondary = true, onClick = onOpenTestLab)
+                Spacer(Modifier.height(8.dp))
+                BrandButton("VIEW STREAK CALENDAR", colors, dark, secondary = true, onClick = onOpenStreaks)
+                Spacer(Modifier.height(8.dp))
+                BrandButton("DEVICE RELIABILITY", colors, dark, secondary = true, onClick = onOpenReliability)
+            }
             if (page > 1) {
                 Spacer(Modifier.height(13.dp))
                 BrandButton("BACK", colors, dark, secondary = true, onClick = onSecondary)

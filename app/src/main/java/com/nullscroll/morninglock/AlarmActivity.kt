@@ -221,6 +221,10 @@ private fun AlarmScreen(
                 Text("Dismiss to begin your morning plan.", color = colors.text, fontSize = 15.sp, lineHeight = 22.sp)
                 Spacer(Modifier.height(8.dp))
                 Text("${AlarmRules.MAX_SNOOZES - plan.snoozesUsed} snoozes left · 5 minutes each", color = colors.secondaryText, fontSize = 13.sp)
+                if (plan.testMode) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("TEMPORARY TEST · 5-SECOND TASKS · 25-SECOND SESSION", color = SiteRed, fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 0.35.sp)
+                }
             }
             errorMessage?.let {
                 Spacer(Modifier.height(12.dp))

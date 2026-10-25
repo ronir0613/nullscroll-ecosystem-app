@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.content.ActivityNotFoundException
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -48,8 +49,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.nullscroll.morninglock.data.AllowedAppEntity
+import com.nullscroll.morninglock.data.CallCountingRules
+import com.nullscroll.morninglock.data.CallLaunchKind
+import com.nullscroll.morninglock.data.CloseOneEntity
 import com.nullscroll.morninglock.data.MorningLockDao
 import com.nullscroll.morninglock.data.MorningSessionEntity
+import com.nullscroll.morninglock.data.SafetyAppRules
 import com.nullscroll.morninglock.data.TaskEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -68,6 +73,9 @@ internal fun MorningLockScreen(
     val scope = rememberCoroutineScope()
     val tasks by dao.tasksForPlan(session.planId).collectAsState(initial = emptyList())
     var allowedApps by remember(session.id) { mutableStateOf<List<AllowedAppEntity>>(emptyList()) }
+    var closeOnes by remember(session.id) { mutableStateOf<List<CloseOneEntity>>(emptyList()) }
+    var callLaunchError by remember(session.id) { mutableStateOf<String?>(null) }
+    var safetyAppError by remember(session.id) { mutableStateOf<String?>(null) }
     var pinningNotice by remember { mutableStateOf<String?>(null) }
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     var blink by remember { mutableStateOf(false) }
@@ -77,7 +85,11 @@ internal fun MorningLockScreen(
     val timeExpired = endAt != null && now >= endAt
 
     LaunchedEffect(session.id) {
-        allowedApps = withContext(Dispatchers.IO) { dao.loadAllowedApps() }
+        val planSelections = withContext(Dispatchers.IO) {
+            dao.loadAllowedApps(session.planId) to dao.loadCloseOnes(session.planId)
+        }
+        allowedApps = planSelections.first
+        closeOnes = planSelections.second
     }
     LaunchedEffect(session.id, session.activeTaskIndex, endAt) {
         if (session.activeTaskIndex >= tasks.size && tasks.isNotEmpty()) {
@@ -115,8 +127,13 @@ internal fun MorningLockScreen(
             Box(Modifier.width(54.dp).height(5.dp).background(SiteRed))
             Spacer(Modifier.height(16.dp))
             val ceilingLeft = session.ceilingAtEpochMillis?.let { ((it - now).coerceAtLeast(0) / 60_000L) }
+            val testSecondsLeft = session.ceilingAtEpochMillis?.let { ((it - now).coerceAtLeast(0) + 999L) / 1_000L }
             Text(
-                if (ceilingLeft == null) "Complete every task to finish your session." else "SESSION TIME LEFT · ${ceilingLeft} MIN",
+                when {
+                    session.testMode -> "SESSION TIME LEFT · ${testSecondsLeft ?: 0}s"
+                    ceilingLeft == null -> "Complete every task to finish your session."
+                    else -> "SESSION TIME LEFT · ${ceilingLeft} MIN"
+                },
                 color = appColors(dark).secondaryText,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
@@ -127,7 +144,7 @@ internal fun MorningLockScreen(
             tasks.forEachIndexed { index, task ->
                 val active = index == session.activeTaskIndex
                 val complete = index < session.activeTaskIndex
-                TaskListRow(task, index, active, complete, dark)
+                TaskListRow(task, index, active, complete, session.testMode, dark)
                 Spacer(Modifier.height(8.dp))
             }
 
@@ -143,7 +160,7 @@ internal fun MorningLockScreen(
                 }
                 Spacer(Modifier.height(14.dp))
                 if (endAt == null) {
-                    SessionButton("START ${activeTask.durationMinutes}-MINUTE TIMER", dark) {
+                    SessionButton(if (session.testMode) "START 5-SECOND TIMER" else "START ${activeTask.durationMinutes}-MINUTE TIMER", dark) {
                         scope.launch(Dispatchers.IO) {
                             dao.startActiveTaskTimer(session.id, System.currentTimeMillis())
                         }
@@ -165,13 +182,67 @@ internal fun MorningLockScreen(
             }
 
             Spacer(Modifier.height(24.dp))
+            Text("CLOSE-ONE DIALER LAUNCHES · ${session.callCount}", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
+            Spacer(Modifier.height(8.dp))
+            if (closeOnes.isEmpty()) {
+                Text("No close ones were selected for this plan.", color = appColors(dark).secondaryText, fontSize = 13.sp)
+            }
+            closeOnes.forEach { person ->
+                SessionButton("CALL ${person.displayName.uppercase(Locale.getDefault())}", dark, secondary = true) {
+                    callLaunchError = null
+                    val callIntent = Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", person.phoneNumber, null))
+                    val canDial = runCatching { callIntent.resolveActivity(context.packageManager) != null }.getOrDefault(false)
+                    if (!canDial) {
+                        callLaunchError = "No dialer is available for this number."
+                    } else {
+                        try {
+                            context.startActivity(callIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                            val nextCount = CallCountingRules.nextCount(
+                                session.callCount,
+                                CallLaunchKind.CLOSE_ONE,
+                                sessionActive = true,
+                                launchSucceeded = true
+                            )
+                            if (nextCount > session.callCount) {
+                                scope.launch(Dispatchers.IO) { dao.recordCloseOneDialerLaunch(session.id) }
+                            }
+                        } catch (_: ActivityNotFoundException) {
+                            callLaunchError = "No dialer is available for this number."
+                        } catch (_: SecurityException) {
+                            callLaunchError = "Android could not open the dialer."
+                        }
+                    }
+                }
+                Spacer(Modifier.height(7.dp))
+            }
+            callLaunchError?.let {
+                Text(it, color = SiteRed, fontSize = 12.sp, lineHeight = 18.sp)
+                Spacer(Modifier.height(7.dp))
+            }
+
+            Spacer(Modifier.height(12.dp))
             Text("HEALTH & SAFETY APPS", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp)
             Spacer(Modifier.height(8.dp))
             allowedApps.forEach { app ->
                 SessionButton("OPEN ${app.displayName.uppercase(Locale.getDefault())}", dark, secondary = true) {
-                    val launch = context.packageManager.getLaunchIntentForPackage(app.packageName)
-                    if (launch != null) context.startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    safetyAppError = null
+                    val launch = runCatching { context.packageManager.getLaunchIntentForPackage(app.packageName) }.getOrNull()
+                    if (!SafetyAppRules.canLaunch(app.packageName, launch != null)) {
+                        safetyAppError = "${app.displayName} is no longer available on this phone."
+                    } else {
+                        try {
+                            context.startActivity(launch!!.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        } catch (_: ActivityNotFoundException) {
+                            safetyAppError = "${app.displayName} could not be opened."
+                        } catch (_: SecurityException) {
+                            safetyAppError = "Android could not open ${app.displayName}."
+                        }
+                    }
                 }
+                Spacer(Modifier.height(7.dp))
+            }
+            safetyAppError?.let {
+                Text(it, color = SiteRed, fontSize = 12.sp, lineHeight = 18.sp)
                 Spacer(Modifier.height(7.dp))
             }
 
@@ -210,7 +281,7 @@ internal fun MorningLockScreen(
 }
 
 @Composable
-private fun TaskListRow(task: TaskEntity, index: Int, active: Boolean, complete: Boolean, dark: Boolean) {
+private fun TaskListRow(task: TaskEntity, index: Int, active: Boolean, complete: Boolean, testMode: Boolean, dark: Boolean) {
     val colors = appColors(dark)
     Surface(
         color = if (active) colors.surface else colors.surface.copy(alpha = 0.66f),
@@ -222,7 +293,7 @@ private fun TaskListRow(task: TaskEntity, index: Int, active: Boolean, complete:
             Text("0${index + 1}", color = if (active) SiteRed else colors.secondaryText, fontFamily = DotGothic, fontSize = 21.sp)
             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                 Text(task.label.uppercase(Locale.getDefault()), color = colors.text, fontSize = 12.sp, fontWeight = FontWeight.Black, letterSpacing = 0.5.sp)
-                Text("${task.durationMinutes} minutes · ${task.type}", color = colors.secondaryText, fontSize = 11.sp)
+                Text(if (testMode) "5 seconds · ${task.type}" else "${task.durationMinutes} minutes · ${task.type}", color = colors.secondaryText, fontSize = 11.sp)
             }
             Text(if (complete) "DONE" else if (active) "NOW" else "NEXT", color = if (active) SiteRed else colors.secondaryText, fontSize = 9.sp, fontWeight = FontWeight.Black)
         }

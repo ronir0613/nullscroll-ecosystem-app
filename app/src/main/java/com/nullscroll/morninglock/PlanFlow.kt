@@ -1,7 +1,6 @@
 package com.nullscroll.morninglock
 
 import android.Manifest
-import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
@@ -99,6 +98,9 @@ internal class NightBeforeDraft {
         planDate = date
         existingPlan = null
         lockedTasks.clear()
+        closeOnes.clear()
+        allowedApps.clear()
+        selectionsLoaded = false
         planLookupComplete = false
         lookedUpDate = null
         alarmScheduled = false
@@ -171,11 +173,11 @@ internal fun NightPlanScreen(
         onSecondary = onBack
     ) {
         if (saved) {
-            PlanDateSelector(draft, dark)
+            PlanDateSummary(draft, dark)
             Spacer(Modifier.height(12.dp))
             LockedPlanSummary(draft.existingPlan!!, draft.lockedTasks, selectedDate, dark)
         } else {
-            PlanDateSelector(draft, dark)
+            PlanDateSummary(draft, dark)
             Spacer(Modifier.height(12.dp))
             AlarmTimePicker(draft, dark)
             Spacer(Modifier.height(18.dp))
@@ -234,28 +236,16 @@ internal fun NightPlanScreen(
 }
 
 @Composable
-private fun PlanDateSelector(draft: NightBeforeDraft, dark: Boolean) {
-    val context = LocalContext.current
+private fun PlanDateSummary(draft: NightBeforeDraft, dark: Boolean) {
+    val savedPlan = draft.existingPlan?.locked == true
     FlowPanel(dark) {
-        Text("TEST DATE · TEMPORARY", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
+        Text(if (savedPlan) "PLAN DATE" else "ALARM DATE", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
         Spacer(Modifier.height(6.dp))
-        Text("Choose today to test the flow now. New plans still default to tomorrow.", color = appColors(dark).secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
-        Spacer(Modifier.height(8.dp))
-        FlowButton(
-            label = planDateShortLabel(draft.planDate), dark = dark, secondary = true,
-            onClick = {
-                val selected = draft.planDate
-                DatePickerDialog(
-                    context,
-                    { _, year, month, day -> draft.selectPlanDate(LocalDate.of(year, month + 1, day)) },
-                    selected.year,
-                    selected.monthValue - 1,
-                    selected.dayOfMonth
-                ).apply {
-                    datePicker.minDate = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                }.show()
-            }
-        )
+        Text(planDateShortLabel(draft.planDate), color = appColors(dark).text, fontFamily = DotGothic, fontSize = 18.sp)
+        if (!savedPlan) {
+            Spacer(Modifier.height(5.dp))
+            Text("New plans are set for tomorrow.", color = appColors(dark).secondaryText, fontSize = 12.sp)
+        }
     }
 }
 
@@ -301,10 +291,21 @@ private fun BudgetCard(tasks: List<TaskDraft>, dark: Boolean) {
                 Text("PLANNED BUDGET", color = colors.secondaryText, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 Text("${PlanRules.plannedBudgetMinutes(tasks.map { it.durationMinutes })} min", color = colors.text, fontFamily = DotGothic, fontSize = 28.sp)
             }
-            Text("+ ${tasks.sumOf { it.durationMinutes }} min\nfrom tasks", color = SiteRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End)
+            Text(
+                "+ ${tasks.sumOf { it.durationMinutes }} min\nfrom tasks",
+                color = SiteRed,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.End
+            )
         }
         Spacer(Modifier.height(6.dp))
-        Text("Starts at 30 minutes. Each task adds its timer to the total.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+        Text(
+            "Starts at 30 minutes. Each task adds its timer to the total.",
+            color = colors.secondaryText,
+            fontSize = 12.sp,
+            lineHeight = 18.sp
+        )
     }
 }
 
@@ -369,7 +370,9 @@ internal fun EssentialsScreen(
     LaunchedEffect(draft) {
         if (!draft.selectionsLoaded) {
             val (savedCloseOnes, savedApps) = withContext(Dispatchers.IO) {
-                dao.loadCloseOnes() to dao.loadAllowedApps()
+                val planId = draft.existingPlan?.id
+                if (planId == null) emptyList<CloseOneEntity>() to emptyList()
+                else dao.loadCloseOnes(planId) to dao.loadAllowedApps(planId)
             }
             draft.closeOnes.addAll(savedCloseOnes)
             draft.allowedApps.addAll(savedApps)
@@ -606,6 +609,8 @@ internal fun PlanReviewScreen(
                         alarmTime = draft.alarmTime,
                         mode = draft.mode,
                         locked = true,
+                        testMode = false,
+                        isTemporaryTest = false,
                         baseBudgetMinutes = PlanRules.DEFAULT_BUDGET_MINUTES,
                         extensionMinutes = 0,
                         nextAlarmAtEpochMillis = com.nullscroll.morninglock.data.AlarmRules.alarmAtEpochMillis(

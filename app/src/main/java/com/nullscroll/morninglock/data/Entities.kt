@@ -6,13 +6,15 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "plans", indices = [Index(value = ["date"], unique = true)])
+@Entity(tableName = "plans", indices = [Index(value = ["date", "isTemporaryTest"], unique = true)])
 data class PlanEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val date: String,
     val alarmTime: String,
     val mode: String = "STRICT",
     val locked: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val testMode: Boolean = false,
+    @ColumnInfo(defaultValue = "0") val isTemporaryTest: Boolean = false,
     @ColumnInfo(defaultValue = "30") val baseBudgetMinutes: Int = 30,
     @ColumnInfo(defaultValue = "0") val extensionMinutes: Int = 0,
     @ColumnInfo(defaultValue = "0") val snoozesUsed: Int = 0,
@@ -35,17 +37,27 @@ data class TaskEntity(
     val position: Int
 )
 
-@Entity(tableName = "close_ones", indices = [Index(value = ["contactLookupKey"], unique = true)])
+@Entity(
+    tableName = "plan_close_ones",
+    foreignKeys = [ForeignKey(entity = PlanEntity::class, parentColumns = ["id"], childColumns = ["planId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index(value = ["planId", "contactLookupKey"], unique = true)]
+)
 data class CloseOneEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val planId: Long = 0,
     val displayName: String,
     val phoneNumber: String,
     val contactLookupKey: String
 )
 
-@Entity(tableName = "allowed_apps", indices = [Index(value = ["packageName"], unique = true)])
+@Entity(
+    tableName = "plan_allowed_apps",
+    foreignKeys = [ForeignKey(entity = PlanEntity::class, parentColumns = ["id"], childColumns = ["planId"], onDelete = ForeignKey.CASCADE)],
+    indices = [Index(value = ["planId", "packageName"], unique = true)]
+)
 data class AllowedAppEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val planId: Long = 0,
     val packageName: String,
     val displayName: String,
     val isHealthOrSafety: Boolean = true
@@ -60,6 +72,7 @@ data class MorningSessionEntity(
     val snoozes: Int = 0,
     val callCount: Int = 0,
     val ceilingAtEpochMillis: Long? = null,
+    @ColumnInfo(defaultValue = "0") val testMode: Boolean = false,
     @ColumnInfo(defaultValue = "0") val activeTaskIndex: Int = 0,
     val activeTaskStartedAtEpochMillis: Long? = null,
     val activeTaskEndsAtEpochMillis: Long? = null
@@ -75,4 +88,19 @@ data class TaskResultEntity(
     val sessionId: Long,
     val taskId: Long,
     val completedAtEpochMillis: Long
+)
+
+data class TemporaryTestDataIds(
+    val planIds: List<Long>,
+    val sessionIds: List<Long>
+)
+
+data class StreakHistoryRow(
+    val planDate: String,
+    val isTemporaryTest: Boolean,
+    val hasSession: Boolean,
+    val plannedTasks: Int,
+    val completedTasks: Int,
+    val callLaunches: Int,
+    val snoozes: Int
 )
