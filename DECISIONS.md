@@ -50,3 +50,4 @@ These are accepted consumer-device escape routes. The product must disclose the 
 - Lock-in saves the plan, ordered tasks, close ones, and allowed apps transactionally. A second plan for the same date is refused. The morning extension is guarded in Room and accepts positive minutes only; the morning UI is part of a later milestone.
 - Room version 2 adds the 30-minute base budget and an extension counter. Version 1 databases migrate with defaults of 30 and 0.
 - The app does not schedule an alarm yet; exact alarms and snoozes are milestone 3.
+- A temporary plan-date picker is present for milestone testing. It defaults to tomorrow and allows today or a future date; remove the picker after all tests are complete.

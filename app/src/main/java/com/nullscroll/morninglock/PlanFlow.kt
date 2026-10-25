@@ -1,6 +1,7 @@
 package com.nullscroll.morninglock
 
 import android.Manifest
+import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
@@ -61,6 +62,7 @@ import com.nullscroll.morninglock.data.PlanEntity
 import com.nullscroll.morninglock.data.PlanRules
 import com.nullscroll.morninglock.data.TaskEntity
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import kotlinx.coroutines.launch
@@ -78,11 +80,22 @@ internal class NightBeforeDraft {
     val allowedApps = mutableStateListOf<AllowedAppEntity>()
     val lockedTasks = mutableStateListOf<TaskEntity>()
     var alarmTime by mutableStateOf("07:00")
+    var planDate by mutableStateOf(LocalDate.now().plusDays(1))
     var mode by mutableStateOf("STRICT")
     var existingPlan by mutableStateOf<PlanEntity?>(null)
     var planLookupComplete by mutableStateOf(false)
+    var lookedUpDate by mutableStateOf<LocalDate?>(null)
     var selectionsLoaded by mutableStateOf(false)
     var saving by mutableStateOf(false)
+
+    fun selectPlanDate(date: LocalDate) {
+        if (date == planDate) return
+        planDate = date
+        existingPlan = null
+        lockedTasks.clear()
+        planLookupComplete = false
+        lookedUpDate = null
+    }
 }
 
 private val builtInTasks = listOf(
@@ -92,20 +105,35 @@ private val builtInTasks = listOf(
     "notes" to "Notes"
 )
 
-private fun tomorrowDate(): LocalDate = LocalDate.now().plusDays(1)
-private fun tomorrowDateText(): String = tomorrowDate().format(DateTimeFormatter.ofPattern("EEEE, MMM d", Locale.getDefault()))
-private fun tomorrowDateKey(): String = tomorrowDate().toString()
+private fun planDateText(date: LocalDate): String =
+    date.format(DateTimeFormatter.ofPattern("EEEE, MMM d", Locale.getDefault()))
+
+private fun planDateShortLabel(date: LocalDate): String = when (date) {
+    LocalDate.now() -> "TODAY · ${planDateText(date)}"
+    LocalDate.now().plusDays(1) -> "TOMORROW · ${planDateText(date)}"
+    else -> planDateText(date).uppercase(Locale.getDefault())
+}
+
+private fun planLockLabel(date: LocalDate): String = when (date) {
+    LocalDate.now() -> "LOCK TODAY'S PLAN"
+    LocalDate.now().plusDays(1) -> "LOCK TOMORROW'S PLAN"
+    else -> "LOCK PLAN FOR ${date.format(DateTimeFormatter.ofPattern("MMM d", Locale.getDefault())).uppercase(Locale.getDefault())}"
+}
 
 private suspend fun NightBeforeDraft.ensureExistingPlan(dao: MorningLockDao) {
-    if (planLookupComplete) return
-    val plan = dao.planForDate(tomorrowDateKey())
+    val lookupDate = planDate
+    if (planLookupComplete && lookedUpDate == lookupDate) return
+    val plan = dao.planForDate(lookupDate.toString())
+    val tasks = plan?.let { dao.loadTasksForPlan(it.id) }.orEmpty()
+    if (planDate != lookupDate) return
     existingPlan = plan
+    lockedTasks.clear()
     if (plan != null) {
         alarmTime = plan.alarmTime
         mode = plan.mode
-        lockedTasks.clear()
-        lockedTasks.addAll(dao.loadTasksForPlan(plan.id))
+        lockedTasks.addAll(tasks)
     }
+    lookedUpDate = lookupDate
     planLookupComplete = true
 }
 
@@ -119,7 +147,8 @@ internal fun NightPlanScreen(
     onContinue: () -> Unit
 ) {
     var ready by remember { mutableStateOf(false) }
-    LaunchedEffect(draft) {
+    val selectedDate = draft.planDate
+    LaunchedEffect(draft, selectedDate) {
         draft.ensureExistingPlan(dao)
         ready = true
     }
@@ -130,7 +159,7 @@ internal fun NightPlanScreen(
     FlowPage(
         page = 2,
         kicker = "TONIGHT'S PLAN",
-        title = if (saved) "Tomorrow is\nalready planned." else "Build a calmer\nmorning.",
+        title = if (saved) "${planDateShortLabel(selectedDate)}\nis already planned." else "Build a calmer\nmorning.",
         body = if (saved) "This plan is locked. Its tasks and alarm time cannot be changed." else "Choose a few built-in tasks, set each timer, and arrange them in order.",
         dark = dark,
         onToggleTheme = onToggleTheme,
@@ -141,8 +170,12 @@ internal fun NightPlanScreen(
         onSecondary = onBack
     ) {
         if (saved) {
-            LockedPlanSummary(draft.existingPlan!!, draft.lockedTasks, dark)
+            PlanDateSelector(draft, dark)
+            Spacer(Modifier.height(12.dp))
+            LockedPlanSummary(draft.existingPlan!!, draft.lockedTasks, selectedDate, dark)
         } else {
+            PlanDateSelector(draft, dark)
+            Spacer(Modifier.height(12.dp))
             AlarmTimePicker(draft, dark)
             Spacer(Modifier.height(18.dp))
             ModePicker(draft.mode, dark)
@@ -200,12 +233,38 @@ internal fun NightPlanScreen(
 }
 
 @Composable
+private fun PlanDateSelector(draft: NightBeforeDraft, dark: Boolean) {
+    val context = LocalContext.current
+    FlowPanel(dark) {
+        Text("TEST DATE · TEMPORARY", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
+        Spacer(Modifier.height(6.dp))
+        Text("Choose today to test the flow now. New plans still default to tomorrow.", color = appColors(dark).secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+        Spacer(Modifier.height(8.dp))
+        FlowButton(
+            label = planDateShortLabel(draft.planDate), dark = dark, secondary = true,
+            onClick = {
+                val selected = draft.planDate
+                DatePickerDialog(
+                    context,
+                    { _, year, month, day -> draft.selectPlanDate(LocalDate.of(year, month + 1, day)) },
+                    selected.year,
+                    selected.monthValue - 1,
+                    selected.dayOfMonth
+                ).apply {
+                    datePicker.minDate = LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                }.show()
+            }
+        )
+    }
+}
+
+@Composable
 private fun AlarmTimePicker(draft: NightBeforeDraft, dark: Boolean) {
     val context = LocalContext.current
     FlowPanel(dark) {
         Text("ALARM TIME", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.1.sp)
         Spacer(Modifier.height(6.dp))
-        Text(tomorrowDateText(), color = appColors(dark).secondaryText, fontSize = 13.sp)
+        Text(planDateText(draft.planDate), color = appColors(dark).secondaryText, fontSize = 13.sp)
         Spacer(Modifier.height(8.dp))
         FlowButton(
             label = "SET ALARM · ${draft.alarmTime}", dark = dark, secondary = true,
@@ -425,7 +484,8 @@ internal fun PlanReviewScreen(
     val scope = rememberCoroutineScope()
     var error by remember { mutableStateOf<String?>(null) }
     var ready by remember { mutableStateOf(false) }
-    LaunchedEffect(draft) {
+    val selectedDate = draft.planDate
+    LaunchedEffect(draft, selectedDate) {
         draft.ensureExistingPlan(dao)
         ready = true
     }
@@ -448,7 +508,7 @@ internal fun PlanReviewScreen(
         body = if (existing) "This saved plan is read-only. In the morning, you may extend the time but never shorten it." else "Check the alarm, task order, and safety choices before saving. Saving locks the plan.",
         dark = dark,
         onToggleTheme = onToggleTheme,
-        primaryLabel = if (existing) "BACK TO HOME" else if (draft.saving) "SAVING PLAN" else "LOCK TOMORROW'S PLAN",
+        primaryLabel = if (existing) "BACK TO HOME" else if (draft.saving) "SAVING PLAN" else planLockLabel(selectedDate),
         primaryEnabled = canLock && !draft.saving,
         onPrimary = {
             if (existing) {
@@ -457,7 +517,7 @@ internal fun PlanReviewScreen(
                 scope.launch {
                     draft.saving = true
                     error = null
-                    val date = tomorrowDateKey()
+                    val date = draft.planDate.toString()
                     val plan = PlanEntity(
                         date = date,
                         alarmTime = draft.alarmTime,
@@ -470,7 +530,7 @@ internal fun PlanReviewScreen(
                     val apps = draft.allowedApps.map { it.copy(id = 0, isHealthOrSafety = true) }
                     val savedId = dao.saveLockedNightPlan(plan, planTasks, people, apps)
                     if (savedId == null) {
-                        error = "A plan for tomorrow already exists. It remains locked and cannot be replaced."
+                        error = "A plan for ${planDateText(draft.planDate)} already exists. It remains locked and cannot be replaced."
                         draft.existingPlan = dao.planForDate(date)
                         draft.existingPlan?.let { draft.lockedTasks.addAll(dao.loadTasksForPlan(it.id)) }
                     } else {
@@ -487,7 +547,7 @@ internal fun PlanReviewScreen(
         onSecondary = onBack
     ) {
         FlowPanel(dark) {
-            SummaryRow("ALARM", "${tomorrowDateText()} · ${draft.existingPlan?.alarmTime ?: draft.alarmTime}", dark)
+            SummaryRow("ALARM", "${planDateText(selectedDate)} · ${draft.existingPlan?.alarmTime ?: draft.alarmTime}", dark)
             SummaryRow("MODE", draft.existingPlan?.mode ?: draft.mode, dark)
             SummaryRow("PLANNED BUDGET", "$totalMinutes minutes", dark)
         }
@@ -520,9 +580,9 @@ internal fun PlanReviewScreen(
 }
 
 @Composable
-private fun LockedPlanSummary(plan: PlanEntity, tasks: List<TaskEntity>, dark: Boolean) {
+private fun LockedPlanSummary(plan: PlanEntity, tasks: List<TaskEntity>, selectedDate: LocalDate, dark: Boolean) {
     FlowPanel(dark) {
-        SummaryRow("ALARM", "${tomorrowDateText()} · ${plan.alarmTime}", dark)
+        SummaryRow("ALARM", "${planDateText(selectedDate)} · ${plan.alarmTime}", dark)
         SummaryRow("MODE", plan.mode, dark)
         SummaryRow("PLANNED BUDGET", "${plan.baseBudgetMinutes + tasks.sumOf { it.durationMinutes } + plan.extensionMinutes} minutes", dark)
     }
