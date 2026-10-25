@@ -8,7 +8,7 @@ Updated 2026-10-24.
 - Compose uses the stable June 2026 BOM with compile SDK 36. The newer Compose 1.12 line requires API 37 and AGP 9.1.1+, so we will take that toolchain step deliberately when the app moves to API 37. Local data is stored in Room; no backend, analytics, or network calls are part of the MVP.
 - The app styling follows the NullScroll site's paper-and-ink look: warm paper with a subtle dot texture, square white panels, restrained black typography, and black calls to action with red offset shadows. The app logo is a vertically split circle: red on the left, white on the right in light mode, and black on the right in dark mode.
 - Inter is bundled for body text and DotGothic16 for display text from the site's Google Fonts styles. Their Latin subsets and OFL licenses are included locally, so the app makes no font network requests.
-- Cold launch shows a 1.5-second NullScroll brand splash before onboarding. The Usage Access onboarding panel disappears when Android reports access granted and reappears if the user revokes it.
+- Cold launch shows a 1.5-second NullScroll brand splash before onboarding. Setup requires Usage Access, notifications, and exact-alarm access; onboarding returns to the checklist after Android Settings so the user can finish each required grant. The checklist disappears once required access is ready. Full-screen alarm access is optional and has a notification fallback.
 - The app offers itself as both a normal launcher icon and a Home app. The user must choose it as default Home through Android's system UI; the app cannot silently change the Home role.
 
 ## Consumer-app morning lock
@@ -49,7 +49,6 @@ These are accepted consumer-device escape routes. The product must disclose the 
 - The app allow-list uses launchable activities declared through the manifest's `<queries>` intent. Android does not identify a user's health/safety apps reliably, so the user chooses which launchable apps to mark as health/safety.
 - Lock-in saves the plan, ordered tasks, close ones, and allowed apps transactionally. A second plan for the same date is refused. The morning extension is guarded in Room and accepts positive minutes only; the morning UI is part of a later milestone.
 - Room version 2 adds the 30-minute base budget and an extension counter. Version 1 databases migrate with defaults of 30 and 0.
-- The app does not schedule an alarm yet; exact alarms and snoozes are milestone 3.
 - A temporary plan-date picker is present for milestone testing. It defaults to tomorrow and allows today or a future date; remove the picker after all tests are complete.
 
 ## Milestone 3 alarm behavior
@@ -59,3 +58,4 @@ These are accepted consumer-device escape routes. The product must disclose the 
 - Android 14+ full-screen-intent access is explained and linked from plan review. If the user does not grant it, Android can show the alarm as a heads-up notification instead.
 - The alarm can be snoozed twice, five minutes each. Snooze count and next trigger are stored on the plan so reboot re-arming preserves an in-progress snooze. Final dismissal records one `MorningSession` with the final-dismissal time and snooze count.
 - `BOOT_COMPLETED` restores not-yet-dismissed alarms from Room. The alarm flow does not enforce the morning lock yet; app monitoring, the task lock, crash resume and session ceiling are milestone 4 and later.
+- A locked plan's tasks and safety selections stay read-only. The user can review all saved details and change its alarm time until the first ring; the updated local trigger is persisted and rescheduled. Time changes are rejected after a snooze or dismissal.

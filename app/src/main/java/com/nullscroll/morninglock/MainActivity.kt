@@ -1,6 +1,7 @@
 package com.nullscroll.morninglock
 
 import android.app.AppOpsManager
+import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,7 +12,9 @@ import android.os.Process
 import android.provider.Settings
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -59,6 +62,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -116,12 +120,14 @@ internal fun appColors(dark: Boolean) = if (dark) {
 
 class MainActivity : ComponentActivity() {
     private var usageAccessGranted by mutableStateOf(false)
+    private var alarmAccess by mutableStateOf(AlarmAccessStatus(false, false, false))
     private var darkThemeEnabled by mutableStateOf(false)
     private var systemDarkTheme = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usageAccessGranted = hasUsageAccess()
+        alarmAccess = alarmAccessStatus(this)
         systemDarkTheme = isSystemDarkTheme()
         darkThemeEnabled = when (getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(THEME_MODE, SYSTEM_MODE)) {
             DARK_MODE -> true
@@ -131,7 +137,7 @@ class MainActivity : ComponentActivity() {
         updateLauncherIcon()
         setContent {
             MorningLockTheme(darkThemeEnabled) {
-                MorningLockApp(usageAccessGranted, darkThemeEnabled, ::toggleTheme)
+                MorningLockApp(usageAccessGranted, alarmAccess, darkThemeEnabled, ::toggleTheme)
             }
         }
         window.decorView.post { updateSystemBars() }
@@ -140,6 +146,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         usageAccessGranted = hasUsageAccess()
+        alarmAccess = alarmAccessStatus(this)
         refreshDeviceTheme()
     }
 
@@ -215,7 +222,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun MorningLockApp(usageAccessGranted: Boolean, darkTheme: Boolean, onToggleTheme: () -> Unit) {
+private fun MorningLockApp(usageAccessGranted: Boolean, alarmAccess: AlarmAccessStatus, darkTheme: Boolean, onToggleTheme: () -> Unit) {
     val context = LocalContext.current
     val dao = remember {
         MorningLockDatabase.open(context).dao()
@@ -236,6 +243,7 @@ private fun MorningLockApp(usageAccessGranted: Boolean, darkTheme: Boolean, onTo
                 composable("onboarding") {
                     ScreenFrame(
                         screen = screens[0], page = 1, pageCount = 4, usageAccessGranted = usageAccessGranted,
+                        alarmAccess = alarmAccess,
                         dark = darkTheme, onToggleTheme = onToggleTheme,
                         onPrimary = { nav.navigate("plan") }, onSecondary = { }
                     )
@@ -259,6 +267,7 @@ private fun MorningLockApp(usageAccessGranted: Boolean, darkTheme: Boolean, onTo
                             screen = screen,
                             page = page,
                             usageAccessGranted = usageAccessGranted,
+                            alarmAccess = alarmAccess,
                             dark = darkTheme,
                             onToggleTheme = onToggleTheme,
                             onPrimary = {
@@ -305,6 +314,7 @@ private fun ScreenFrame(
     page: Int,
     pageCount: Int = screens.size,
     usageAccessGranted: Boolean,
+    alarmAccess: AlarmAccessStatus,
     dark: Boolean,
     onToggleTheme: () -> Unit,
     onPrimary: () -> Unit,
@@ -312,6 +322,8 @@ private fun ScreenFrame(
 ) {
     val context = LocalContext.current
     val colors = appColors(dark)
+    val notificationPermissionRequest = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val requiredAccessReady = usageAccessGranted && alarmAccess.notificationsAllowed && alarmAccess.exactAlarmsAllowed
 
     Box(Modifier.fillMaxSize()) {
         PaperTexture(colors)
@@ -363,34 +375,23 @@ private fun ScreenFrame(
                         }
                     }
                 }
-                if (!usageAccessGranted) {
+                if (!requiredAccessReady || !alarmAccess.fullScreenAllowed) {
                     Spacer(Modifier.height(14.dp))
-                    BrandPanel(colors, dark, inset = 18.dp) {
-                        Text("USAGE ACCESS", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "During a session, Morning Lock checks which app is in front about once a second and returns you to the lock screen if needed. That activity stays on your phone and is never sent anywhere.",
-                            color = colors.secondaryText,
-                            fontSize = 14.sp,
-                            lineHeight = 21.sp
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            "To allow it: open Usage access settings, choose Morning Lock, turn on Permit usage access, then return here.",
-                            color = colors.text,
-                            fontSize = 13.sp,
-                            lineHeight = 20.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(Modifier.height(15.dp))
-                        BrandButton(
-                            label = "OPEN USAGE ACCESS SETTINGS",
-                            colors = colors,
-                            dark = dark,
-                            secondary = true,
-                            onClick = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) }
-                        )
-                    }
+                    RequiredAccessPanel(
+                        usageAccessGranted = usageAccessGranted,
+                        alarmAccess = alarmAccess,
+                        colors = colors,
+                        dark = dark,
+                        onUsageAccess = { context.startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)) },
+                        onNotifications = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                            ) notificationPermissionRequest.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            else context.startActivity(notificationSettingsIntent(context))
+                        },
+                        onExactAlarms = { context.startActivity(exactAlarmSettingsIntent(context)) },
+                        onFullScreen = { context.startActivity(fullScreenSettingsIntent(context)) }
+                    )
                 }
             } else {
                 Spacer(Modifier.height(26.dp))
@@ -418,7 +419,14 @@ private fun ScreenFrame(
             }
 
             Spacer(Modifier.height(28.dp))
-            BrandButton(screen.action, colors, dark, onClick = onPrimary)
+            val actionLabel = if (screen.route == "onboarding" && !requiredAccessReady) "ALLOW REQUIRED ACCESS" else screen.action
+            BrandButton(
+                actionLabel,
+                colors,
+                dark,
+                enabled = screen.route != "onboarding" || requiredAccessReady,
+                onClick = onPrimary
+            )
             if (page > 1) {
                 Spacer(Modifier.height(13.dp))
                 BrandButton("BACK", colors, dark, secondary = true, onClick = onSecondary)
@@ -429,6 +437,66 @@ private fun ScreenFrame(
                 Text("$page / $pageCount", color = colors.secondaryText, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
             }
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun RequiredAccessPanel(
+    usageAccessGranted: Boolean,
+    alarmAccess: AlarmAccessStatus,
+    colors: AppColors,
+    dark: Boolean,
+    onUsageAccess: () -> Unit,
+    onNotifications: () -> Unit,
+    onExactAlarms: () -> Unit,
+    onFullScreen: () -> Unit
+) {
+    BrandPanel(colors, dark, inset = 18.dp) {
+        Text("REQUIRED ACCESS", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.3.sp)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Allow these Android permissions to use app blocking and schedule your alarm. You can change them later in Settings.",
+            color = colors.secondaryText,
+            fontSize = 13.sp,
+            lineHeight = 20.sp
+        )
+        if (!usageAccessGranted) {
+            Spacer(Modifier.height(14.dp))
+            Text("USAGE ACCESS · REQUIRED", color = colors.text, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 0.6.sp)
+            Spacer(Modifier.height(5.dp))
+            Text(
+                "During a session, Morning Lock checks which app is in front about once a second and returns you to the lock screen if needed. This activity stays on your phone and is never sent anywhere.",
+                color = colors.secondaryText,
+                fontSize = 12.sp,
+                lineHeight = 18.sp
+            )
+            Spacer(Modifier.height(8.dp))
+            BrandButton("OPEN USAGE ACCESS SETTINGS", colors, dark, secondary = true, onClick = onUsageAccess)
+        }
+        if (!alarmAccess.notificationsAllowed) {
+            Spacer(Modifier.height(14.dp))
+            Text("NOTIFICATIONS · REQUIRED", color = colors.text, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 0.6.sp)
+            Spacer(Modifier.height(5.dp))
+            Text("Notifications let Android deliver the alarm and its snooze and dismiss controls.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+            Spacer(Modifier.height(8.dp))
+            BrandButton("ALLOW NOTIFICATIONS", colors, dark, secondary = true, onClick = onNotifications)
+        }
+        if (!alarmAccess.exactAlarmsAllowed) {
+            Spacer(Modifier.height(14.dp))
+            Text("EXACT ALARMS · REQUIRED", color = colors.text, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 0.6.sp)
+            Spacer(Modifier.height(5.dp))
+            Text("Exact alarm access lets your alarm ring at the time you choose.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+            Spacer(Modifier.height(8.dp))
+            BrandButton("ALLOW EXACT ALARMS", colors, dark, secondary = true, onClick = onExactAlarms)
+        }
+        if (!alarmAccess.fullScreenAllowed) {
+            Spacer(Modifier.height(14.dp))
+            Text("FULL-SCREEN ALARM · OPTIONAL", color = colors.text, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 0.6.sp)
+            Spacer(Modifier.height(5.dp))
+            Text("Allow this if you want the alarm to open over your lock screen. Without it, Android shows an alarm notification you can tap.", color = colors.secondaryText, fontSize = 12.sp, lineHeight = 18.sp)
+            Spacer(Modifier.height(8.dp))
+            BrandButton("ALLOW FULL-SCREEN ALARMS", colors, dark, secondary = true, onClick = onFullScreen)
         }
     }
 }
@@ -537,6 +605,7 @@ internal fun BrandButton(
     colors: AppColors,
     dark: Boolean,
     secondary: Boolean = false,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val background = when {
@@ -557,6 +626,7 @@ internal fun BrandButton(
         Button(
             onClick = onClick,
             modifier = Modifier.fillMaxWidth().height(56.dp),
+            enabled = enabled,
             shape = RoundedCornerShape(0.dp),
             border = BorderStroke(2.dp, if (secondary && dark) colors.border else Color.Black),
             colors = ButtonDefaults.buttonColors(containerColor = background, contentColor = content)

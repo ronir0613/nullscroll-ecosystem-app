@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import com.nullscroll.morninglock.data.AllowedAppEntity
+import com.nullscroll.morninglock.data.AlarmRules
 import com.nullscroll.morninglock.data.CloseOneEntity
 import com.nullscroll.morninglock.data.MorningLockDao
 import com.nullscroll.morninglock.data.PlanEntity
@@ -157,7 +158,7 @@ internal fun NightPlanScreen(
         page = 2,
         kicker = "TONIGHT'S PLAN",
         title = if (saved) "${planDateShortLabel(selectedDate)}\nis already planned." else "Build a calmer\nmorning.",
-        body = if (saved) "This plan is locked. Its tasks and alarm time cannot be changed." else "Choose a few built-in tasks, set each timer, and arrange them in order.",
+        body = if (saved) "This plan is locked. Review its details and change the alarm time until its first ring." else "Choose a few built-in tasks, set each timer, and arrange them in order.",
         dark = dark,
         onToggleTheme = onToggleTheme,
         primaryLabel = if (saved) "VIEW LOCKED PLAN" else "CHOOSE ESSENTIALS",
@@ -503,6 +504,8 @@ internal fun PlanReviewScreen(
     if (!ready) return
     val existing = draft.existingPlan?.locked == true
     val existingPlanPending = existing && draft.existingPlan?.alarmDismissedAtEpochMillis == null
+    val canEditAlarmTime = existingPlanPending && draft.existingPlan?.snoozesUsed == 0
+    val alarmTimeChanged = existing && draft.alarmTime != draft.existingPlan?.alarmTime
     val requiredAlarmAccessReady = alarmAccess.notificationsAllowed && alarmAccess.exactAlarmsAllowed
     val planTasks = if (existing) draft.lockedTasks.toList() else draft.tasks.mapIndexed { index, task ->
         TaskEntity(planId = 0, label = task.label, type = task.type, durationMinutes = task.durationMinutes, position = index)
@@ -518,20 +521,51 @@ internal fun PlanReviewScreen(
         page = 4,
         kicker = "LOCK-IN REVIEW",
         title = if (existing) "Your plan is\nlocked in." else "Make it\nintentional.",
-        body = if (existing) "This saved plan is read-only. In the morning, you may extend the time but never shorten it." else "Check the alarm, task order, and safety choices before saving. Saving locks the plan.",
+        body = if (existing) "Review your alarm, tasks, and safety choices. You may change the alarm time until the first ring; the task plan stays locked." else "Check the alarm, task order, and safety choices before saving. Saving locks the plan.",
         dark = dark,
         onToggleTheme = onToggleTheme,
         primaryLabel = when {
+            existing && alarmTimeChanged -> "UPDATE ALARM TIME"
             existing && (!existingPlanPending || draft.alarmScheduled) -> "BACK TO HOME"
             existing -> "SCHEDULE ALARM"
             draft.saving -> "SAVING PLAN"
             else -> "LOCK PLAN & SET ALARM"
         },
-        primaryEnabled = if (existing) true else canLock && requiredAlarmAccessReady && !draft.saving,
+        primaryEnabled = if (existing) !draft.saving else canLock && requiredAlarmAccessReady && !draft.saving,
         onPrimary = {
             if (existing) {
                 val existingPlan = draft.existingPlan!!
-                if (existingPlanPending && !draft.alarmScheduled) {
+                if (alarmTimeChanged) {
+                    if (!requiredAlarmAccessReady) {
+                        error = "Allow notifications and exact alarms before updating this alarm."
+                    } else {
+                        val updatedPlan = AlarmRules.withUpdatedTime(existingPlan, draft.alarmTime, ZoneId.systemDefault())
+                        if (!canEditAlarmTime || updatedPlan == null) {
+                            error = "The alarm time can only be changed before the first ring."
+                        } else {
+                            scope.launch {
+                                try {
+                                    val updated = dao.updatePendingAlarmTime(
+                                        existingPlan.id,
+                                        updatedPlan.alarmTime,
+                                        updatedPlan.nextAlarmAtEpochMillis!!
+                                    )
+                                    if (updated == 0) {
+                                        error = "This alarm has already started and can no longer be changed."
+                                    } else {
+                                        draft.existingPlan = updatedPlan
+                                        AlarmScheduler.schedule(context, updatedPlan)
+                                        draft.alarmScheduled = true
+                                        error = null
+                                        onDone()
+                                    }
+                                } catch (failure: Exception) {
+                                    error = failure.message ?: "The updated alarm could not be scheduled."
+                                }
+                            }
+                        }
+                    }
+                } else if (existingPlanPending && !draft.alarmScheduled) {
                     if (!requiredAlarmAccessReady) {
                         error = "Allow notifications and exact alarms before scheduling this plan."
                     } else {
@@ -621,8 +655,14 @@ internal fun PlanReviewScreen(
             }
         )
         Spacer(Modifier.height(14.dp))
+        if (canEditAlarmTime) {
+            Text("CHANGE ALARM TIME", color = SiteRed, fontSize = 11.sp, fontWeight = FontWeight.Black, letterSpacing = 1.2.sp)
+            Spacer(Modifier.height(8.dp))
+            AlarmTimePicker(draft, dark)
+            Spacer(Modifier.height(14.dp))
+        }
         FlowPanel(dark) {
-            SummaryRow("ALARM", "${planDateText(selectedDate)} · ${draft.existingPlan?.alarmTime ?: draft.alarmTime}", dark)
+            SummaryRow("ALARM", "${planDateText(selectedDate)} · ${draft.alarmTime}", dark)
             SummaryRow("MODE", draft.existingPlan?.mode ?: draft.mode, dark)
             SummaryRow("PLANNED BUDGET", "$totalMinutes minutes", dark)
         }

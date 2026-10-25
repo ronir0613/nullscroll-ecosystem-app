@@ -53,6 +53,9 @@ interface MorningLockDao {
     @Query("UPDATE plans SET extensionMinutes = :extensionMinutes WHERE id = :planId AND locked = 1")
     suspend fun updateLockedExtension(planId: Long, extensionMinutes: Int): Int
 
+    @Query("UPDATE plans SET alarmTime = :alarmTime, nextAlarmAtEpochMillis = :nextAlarmAtEpochMillis WHERE id = :planId AND locked = 1 AND snoozesUsed = 0 AND alarmDismissedAtEpochMillis IS NULL")
+    suspend fun updatePendingAlarmTime(planId: Long, alarmTime: String, nextAlarmAtEpochMillis: Long): Int
+
     @Transaction
     suspend fun extendLockedPlan(planId: Long, addedMinutes: Int): Boolean {
         val plan = planById(planId) ?: return false
